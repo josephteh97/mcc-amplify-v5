@@ -39,6 +39,11 @@ from backend.reconcile             import (
     reconcile_project,
     reconcile_storey,
 )
+from backend.resolve               import (
+    StoreyResolveResult,
+    load_inventory,
+    resolve_storey,
+)
 from backend.ingest.ingest import IngestedFile, ingest, walk_uploads
 
 # Progress callback signature: (event_type, payload) -> None.
@@ -58,6 +63,7 @@ class JobResult:
     section:         list[SectionExtractResult] | None    = None
     reconcile_storeys:  list[StoreyReconcileResult] | None  = None
     reconcile_project_: ProjectReconcileResult | None      = None
+    resolve_storeys:    list[StoreyResolveResult] | None    = None
 
 
 def _emit(progress: ProgressFn, event_type: str, payload: dict) -> None:
@@ -125,6 +131,8 @@ def run(
         meta, progress,
     )
 
+    resolve_results = _run_resolve(workspace, storey_results, meta, progress)
+
     return JobResult(
         workspace          = workspace,
         manifest           = manifest,
@@ -135,6 +143,7 @@ def run(
         section            = section_results,
         reconcile_storeys  = storey_results,
         reconcile_project_ = project_result,
+        resolve_storeys    = resolve_results,
     )
 
 
@@ -191,6 +200,87 @@ def _run_plan_overall(
         f"with_grid={summary['with_grid']} rejected={summary['rejected']}",
     )
     return results
+
+
+def _run_resolve(
+    workspace:       Workspace,
+    storey_results:  list[StoreyReconcileResult],
+    meta:            MetaYaml | None,
+    progress:        ProgressFn,
+) -> list[StoreyResolveResult]:
+    """Stage 5A — Type Resolver + Family Manager (PLAN.md §8).
+
+    Loads (optional) family inventory once, runs the matcher per storey,
+    persists the inventory back to disk so auto-duplicated types
+    accumulate across storeys within one job.
+    """
+    inventory_path = workspace.output / "_family_inventory.json"
+    inventory = load_inventory(inventory_path if inventory_path.exists() else None)
+
+    _emit(progress, "stage_started", {"stage": "resolve", "storey_count": len(storey_results)})
+    logger.info(f"Stage 5A — resolve: {len(storey_results)} storey(s); "
+                f"inventory starts with {inventory.types_count()} types")
+
+    out_dir = workspace.output
+    results: list[StoreyResolveResult] = []
+    for r in storey_results:
+        if r.payload_path is None:
+            continue
+        try:
+            res = resolve_storey(
+                reconciled_path     = r.payload_path,
+                inventory           = inventory,
+                out_dir             = out_dir,
+                inventory_save_path = inventory_path,
+            )
+        except Exception as exc:                    # noqa: BLE001
+            logger.exception(f"resolve_storey failed on {r.storey_id}: {exc}")
+            continue
+        results.append(res)
+
+    summary = {
+        "storey_count":  len(results),
+        "matched_exact": sum(r.tier_counts.get("MATCHED_EXACT", 0) for r in results),
+        "matched_label": sum(r.tier_counts.get("MATCHED_LABEL", 0) for r in results),
+        "created":       sum(r.tier_counts.get("CREATED",       0) for r in results),
+        "rejected":      sum(r.tier_counts.get("REJECTED",      0) for r in results),
+        "inventory_types": inventory.types_count(),
+    }
+    _write_resolve_report(workspace, results, summary)
+    _emit(progress, "stage_completed", {"stage": "resolve", **summary})
+    logger.info(
+        f"Stage 5A done — storeys={summary['storey_count']} "
+        f"matched={summary['matched_exact']+summary['matched_label']} "
+        f"created={summary['created']} rejected={summary['rejected']} "
+        f"inventory={summary['inventory_types']}"
+    )
+    return results
+
+
+def _write_resolve_report(
+    workspace:  Workspace,
+    results:    list[StoreyResolveResult],
+    summary:    dict,
+) -> None:
+    payload = {
+        "summary": summary,
+        "storeys": [
+            {
+                "storey_id":       r.storey_id,
+                "reconciled_path": str(r.reconciled_path),
+                "typing_path":     None if r.typing_path is None else str(r.typing_path),
+                "review_path":     None if r.review_path is None else str(r.review_path),
+                "column_count":    r.column_count,
+                "tier_counts":     r.tier_counts,
+                "flags":           r.flags,
+            }
+            for r in results
+        ],
+    }
+    out = workspace.output / "_resolve_report.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w") as f:
+        json.dump(payload, f, indent=2)
 
 
 def _run_reconcile(
