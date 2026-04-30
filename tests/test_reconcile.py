@@ -17,8 +17,18 @@ from pathlib import Path
 
 import pytest
 
-from backend.core.meta_yaml          import LevelMeta, MetaYaml, ProjectMeta, SlabsMeta
-from backend.reconcile.project       import reconcile_project, _merge_elevation_levels
+from backend.core.meta_yaml          import (
+    AliasesMeta,
+    LevelMeta,
+    MetaYaml,
+    ProjectMeta,
+    SlabsMeta,
+)
+from backend.reconcile.project       import (
+    _build_alias_resolver,
+    _merge_elevation_levels,
+    reconcile_project,
+)
 from backend.reconcile.storey        import (
     _compute_offsets,
     _label_to_mm,
@@ -227,6 +237,93 @@ def test_merge_elevation_levels_groups_and_flags(tmp_path: Path) -> None:
     assert by["BASEMENT 1"]["rl_mm"] in (3510, 3500, 3520)   # median of {3500, 3520}
     # 1ST STOREY varies 9500 vs 9700 — beyond LEVEL_AGREEMENT_TOL_MM=25.
     assert any("1ST STOREY" in f and "disagreement" in f for f in flags)
+
+
+# ── meta.yaml.aliases.levels — name normalisation ────────────────────────────
+
+def test_alias_resolver_collapses_both_directions() -> None:
+    meta = MetaYaml(
+        project = ProjectMeta(id="X"),
+        aliases = AliasesMeta(levels={
+            "BASEMENT 1": "B1",
+            "1ST STOREY": "L1",
+        }),
+    )
+    resolve, fmap = _build_alias_resolver(meta)
+    # Forward: arch full-name → structural code.
+    assert resolve("BASEMENT 1") == "B1"
+    assert resolve("basement 1") == "B1"     # case-insensitive lookup
+    # Reverse: target side recognised as canonical (no-op resolution).
+    assert resolve("B1") == "B1"
+    # Unmapped names pass through unchanged.
+    assert resolve("ROOF") == "ROOF"
+    assert resolve("") == ""
+
+
+def test_alias_collapses_arch_and_structural_levels(tmp_path: Path) -> None:
+    """Architectural BASEMENT 1 and structural B1 both at RL 3500 must
+    collapse into a single B1 entry, not show up as two duplicate levels."""
+    e1 = tmp_path / "arch.elev.json"
+    e2 = tmp_path / "struct.elev.json"
+    _write_synthetic_elev(e1, [
+        {"name": "BASEMENT 1", "rl_mm": 3500, "source_pdf": "arch.pdf"},
+        {"name": "1ST STOREY", "rl_mm": 9500, "source_pdf": "arch.pdf"},
+    ])
+    _write_synthetic_elev(e2, [
+        {"name": "B1", "rl_mm": 3500, "source_pdf": "struct.pdf"},
+        {"name": "L1", "rl_mm": 9500, "source_pdf": "struct.pdf"},
+    ])
+    meta = MetaYaml(
+        project = ProjectMeta(id="X"),
+        aliases = AliasesMeta(levels={
+            "BASEMENT 1": "B1",
+            "1ST STOREY": "L1",
+        }),
+    )
+    levels, flags = _merge_elevation_levels([e1, e2], meta=meta)
+    by_name = {l["name"]: l for l in levels}
+    # Two unique levels, not four.
+    assert set(by_name.keys()) == {"B1", "L1"}
+    assert by_name["B1"]["rl_mm"] == 3500
+    assert by_name["L1"]["rl_mm"] == 9500
+    # Both PDFs contributed → n_pdfs == 2.
+    assert by_name["B1"]["n_pdfs"] == 2
+    # Provenance: which raw spellings collapsed in.
+    assert "BASEMENT 1" in by_name["B1"]["aliased_from"]
+    # alias_normalisation flag emitted.
+    assert any(f.startswith("alias_normalisation_applied:") for f in flags)
+
+
+def test_alias_does_not_affect_unmapped_names(tmp_path: Path) -> None:
+    e1 = tmp_path / "e.elev.json"
+    _write_synthetic_elev(e1, [
+        {"name": "ROOF", "rl_mm": 30000, "source_pdf": "e.pdf"},
+    ])
+    meta = MetaYaml(
+        project = ProjectMeta(id="X"),
+        aliases = AliasesMeta(levels={"BASEMENT 1": "B1"}),
+    )
+    levels, _ = _merge_elevation_levels([e1], meta=meta)
+    assert levels[0]["name"] == "ROOF"
+    assert "aliased_from" not in levels[0]   # no alias applied
+
+
+def test_meta_override_resolves_through_alias(tmp_path: Path) -> None:
+    """Override declared as 'BASEMENT 1' must hit the merged 'B1' entry."""
+    e1 = tmp_path / "e.elev.json"
+    _write_synthetic_elev(e1, [
+        {"name": "B1", "rl_mm": 3500, "source_pdf": "e.pdf"},
+    ])
+    meta = MetaYaml(
+        project = ProjectMeta(id="X"),
+        levels  = {"BASEMENT 1": LevelMeta(rl_mm=3700.0, source="manual")},
+        aliases = AliasesMeta(levels={"BASEMENT 1": "B1"}),
+    )
+    r = reconcile_project([e1], [], tmp_path, meta=meta)
+    by_name = {l["name"]: l for l in r.levels}
+    assert "B1" in by_name
+    assert by_name["B1"]["rl_mm"] == 3700        # override wins
+    assert by_name["B1"]["source"] == "meta.yaml"
 
 
 def test_meta_levels_override(tmp_path: Path) -> None:

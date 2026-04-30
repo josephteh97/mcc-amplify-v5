@@ -54,6 +54,30 @@ class ReviewMeta(BaseModel):
     conflicts:          list[Any] = []
 
 
+class AliasesMeta(BaseModel):
+    """Project-level name normalisation map.
+
+    The structural plan filenames give us short codes (`B1`, `L3`, `RF`),
+    while architectural elevations carry full names (`BASEMENT 1`,
+    `1ST STOREY`, `ROOF`). Without aliasing, the project reconciler
+    would emit them as separate levels with the same RL. The user
+    declares the mapping once in meta.yaml::
+
+        aliases:
+          levels:
+            "BASEMENT 1": B1
+            "BASEMENT 2": B2
+            "1ST STOREY": L1
+            "2ND STOREY": L2
+            ROOF:        RF
+
+    Both source-name match and target-name match are honoured (i.e.
+    the value side is also recognised — useful when the user prefers
+    architectural names as canonical).
+    """
+    levels: dict[str, str] = {}
+
+
 class MetaYaml(BaseModel):
     project:  ProjectMeta
     target:   TargetMeta   = TargetMeta()
@@ -61,6 +85,7 @@ class MetaYaml(BaseModel):
     levels:   dict[str, LevelMeta] = {}
     slabs:    SlabsMeta    = SlabsMeta()
     review:   ReviewMeta   = ReviewMeta()
+    aliases:  AliasesMeta  = AliasesMeta()
 
     @classmethod
     def load(cls, path: Path) -> "MetaYaml":
