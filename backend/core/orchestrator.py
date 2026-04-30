@@ -29,6 +29,7 @@ from backend.classify.rules import FilenameRule
 from backend.classify.types import DrawingClass
 from backend.core.meta_yaml import MetaYaml
 from backend.core.workspace import Workspace
+from backend.extract.plan_overall import OverallExtractResult, extract_overall
 from backend.ingest.ingest import IngestedFile, ingest, walk_uploads
 
 # Progress callback signature: (event_type, payload) -> None.
@@ -41,7 +42,8 @@ ProgressFn = Callable[[str, dict], None] | None
 class JobResult:
     workspace:       Workspace
     manifest:        list[IngestedFile]
-    classification:  list[ClassifiedItem] | None = None
+    classification:  list[ClassifiedItem] | None         = None
+    plan_overall:    list[OverallExtractResult] | None   = None
 
 
 def _emit(progress: ProgressFn, event_type: str, payload: dict) -> None:
@@ -50,10 +52,11 @@ def _emit(progress: ProgressFn, event_type: str, payload: dict) -> None:
 
 
 def run(
-    workspace:  Workspace,
-    walk_root:  Path | None      = None,
-    meta_path:  Path | None      = None,
-    progress:   ProgressFn       = None,
+    workspace:           Workspace,
+    walk_root:           Path | None      = None,
+    meta_path:           Path | None      = None,
+    progress:            ProgressFn       = None,
+    run_yolo_columns:    bool             = True,
 ) -> JobResult:
     """One job = one upload = one output (§2). Rerun = full reprocess.
 
@@ -92,7 +95,97 @@ def run(
     )
     _emit(progress, "stage_completed", {"stage": "classify", **cls_summary})
 
-    return JobResult(workspace=workspace, manifest=manifest, classification=classified)
+    overall_results = _run_plan_overall(workspace, classified, progress,
+                                        run_yolo=run_yolo_columns)
+
+    return JobResult(
+        workspace      = workspace,
+        manifest       = manifest,
+        classification = classified,
+        plan_overall   = overall_results,
+    )
+
+
+def _run_plan_overall(
+    workspace:  Workspace,
+    classified: list[ClassifiedItem],
+    progress:   ProgressFn,
+    run_yolo:   bool = True,
+) -> list[OverallExtractResult]:
+    """Stage 3A-1 — grid + affine on every STRUCT_PLAN_OVERALL page (PLAN.md §3A-1).
+
+    Stops at grid + affine for now; YOLO columns/beams/slabs land in Step 4d.
+    """
+    overall_items = [
+        c for c in classified
+        if c.result.drawing_class == DrawingClass.STRUCT_PLAN_OVERALL
+    ]
+    _emit(progress, "stage_started", {"stage": "extract_plan_overall", "count": len(overall_items)})
+    logger.info(f"Stage 3A-1 — extract_plan_overall: {len(overall_items)} page(s)")
+
+    out_dir = workspace.extracted / "plan_overall"
+    results: list[OverallExtractResult] = []
+    for c in overall_items:
+        try:
+            r = extract_overall(c.pdf_path, c.page_index, out_dir, run_yolo=run_yolo)
+        except Exception as exc:                   # noqa: BLE001 — log + continue
+            logger.exception(f"extract_overall failed on {c.pdf_path.name}: {exc}")
+            results.append(OverallExtractResult(
+                storey_id          = c.pdf_path.stem,
+                pdf_path           = c.pdf_path,
+                page_index         = c.page_index,
+                has_grid           = False,
+                affine_residual_px = None,
+                payload_path       = None,
+                error              = f"{type(exc).__name__}: {exc}",
+                flags              = ["extractor_crashed"],
+            ))
+            continue
+        results.append(r)
+        logger.info(
+            f"  {r.storey_id}: has_grid={r.has_grid} residual="
+            f"{r.affine_residual_px if r.affine_residual_px is not None else 'n/a'}",
+        )
+
+    summary = {
+        "total":            len(results),
+        "with_grid":        sum(1 for r in results if r.has_grid),
+        "rejected":         sum(1 for r in results if not r.has_grid),
+    }
+    _write_overall_report(workspace, results, summary)
+    _emit(progress, "stage_completed", {"stage": "extract_plan_overall", **summary})
+    logger.info(
+        f"Stage 3A-1 done — {summary['total']} page(s) | "
+        f"with_grid={summary['with_grid']} rejected={summary['rejected']}",
+    )
+    return results
+
+
+def _write_overall_report(
+    workspace: Workspace,
+    results:   list[OverallExtractResult],
+    summary:   dict,
+) -> None:
+    payload = {
+        "summary": summary,
+        "items": [
+            {
+                "storey_id":          r.storey_id,
+                "pdf":                str(r.pdf_path),
+                "page_index":         r.page_index,
+                "has_grid":           r.has_grid,
+                "affine_residual_px": r.affine_residual_px,
+                "payload_path":       None if r.payload_path is None else str(r.payload_path),
+                "error":              r.error,
+                "flags":              r.flags,
+            }
+            for r in results
+        ],
+    }
+    out = workspace.output / "_extract_plan_overall_report.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w") as f:
+        json.dump(payload, f, indent=2)
 
 
 def _filename_rules_from_meta(meta: MetaYaml | None) -> list[FilenameRule] | None:
