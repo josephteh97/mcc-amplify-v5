@@ -15,7 +15,15 @@ PAGE_REGION_MAP: dict[int, str] = {
 
 LABEL_SEARCH_BBOX_DIAGONAL_MULT: float = 2.0
 PAIR_PROXIMITY_MM:               float = 50.0
-DEDUPE_TOL_MM:                   float = 50.0
+# Reconcile (PLAN §7) tolerance for matching -00 canonical columns to
+# -01..04 enlarged detections in the global grid-mm frame. PLAN guessed
+# 50 mm; real fixture data shows a ~120 mm systematic Y offset between
+# OVERALL and ENLARGED affines because the grid-bubble symbol's relative
+# position to the actual grid line varies between page scales (4× zoom
+# repositions the bubble glyph). 250 mm is generous enough to absorb
+# this artifact while staying well under the 8400 mm minimum bay
+# spacing, so neighbouring columns can never collide.
+DEDUPE_TOL_MM:                   float = 250.0
 ASPECT_TOL:                      float = 0.15
 ROUND_ASPECT_LO:                 float = 0.85
 ROUND_ASPECT_HI:                 float = 1.15

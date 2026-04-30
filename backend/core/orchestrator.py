@@ -33,6 +33,12 @@ from backend.extract.elevation     import ElevationExtractResult, extract_elevat
 from backend.extract.plan_enlarged import EnlargedExtractResult,  extract_enlarged
 from backend.extract.plan_overall  import OverallExtractResult,   extract_overall
 from backend.extract.section       import SectionExtractResult,   extract_section
+from backend.reconcile             import (
+    ProjectReconcileResult,
+    StoreyReconcileResult,
+    reconcile_project,
+    reconcile_storey,
+)
 from backend.ingest.ingest import IngestedFile, ingest, walk_uploads
 
 # Progress callback signature: (event_type, payload) -> None.
@@ -50,6 +56,8 @@ class JobResult:
     plan_enlarged:   list[EnlargedExtractResult] | None   = None
     elevation:       list[ElevationExtractResult] | None  = None
     section:         list[SectionExtractResult] | None    = None
+    reconcile_storeys:  list[StoreyReconcileResult] | None  = None
+    reconcile_project_: ProjectReconcileResult | None      = None
 
 
 def _emit(progress: ProgressFn, event_type: str, payload: dict) -> None:
@@ -111,14 +119,22 @@ def run(
 
     section_results = _run_section(workspace, classified, progress)
 
+    storey_results, project_result = _run_reconcile(
+        workspace,
+        overall_results, enlarged_results, elevation_results, section_results,
+        meta, progress,
+    )
+
     return JobResult(
-        workspace      = workspace,
-        manifest       = manifest,
-        classification = classified,
-        plan_overall   = overall_results,
-        plan_enlarged  = enlarged_results,
-        elevation      = elevation_results,
-        section        = section_results,
+        workspace          = workspace,
+        manifest           = manifest,
+        classification     = classified,
+        plan_overall       = overall_results,
+        plan_enlarged      = enlarged_results,
+        elevation          = elevation_results,
+        section            = section_results,
+        reconcile_storeys  = storey_results,
+        reconcile_project_ = project_result,
     )
 
 
@@ -175,6 +191,124 @@ def _run_plan_overall(
         f"with_grid={summary['with_grid']} rejected={summary['rejected']}",
     )
     return results
+
+
+def _run_reconcile(
+    workspace:          Workspace,
+    overall_results:    list[OverallExtractResult],
+    enlarged_results:   list[EnlargedExtractResult],
+    elevation_results:  list[ElevationExtractResult],
+    section_results:    list[SectionExtractResult],
+    meta:               MetaYaml | None,
+    progress:           ProgressFn,
+) -> tuple[list[StoreyReconcileResult], ProjectReconcileResult | None]:
+    """Stage 4 — Reconcile (PLAN.md §7).
+
+    Per-storey: cross-link -00 canonical columns with -01..04 type/dim
+    labels. Per-project: merge elevation levels, build slab fallback map.
+    """
+    out_dir = workspace.extracted / "reconcile"
+
+    # Group enlarged extracts by storey_id and pair them with their overall.
+    enlarged_by_storey: dict[str, list[Path]] = {}
+    for er in enlarged_results:
+        if er.payload_path is None:
+            continue
+        enlarged_by_storey.setdefault(er.storey_id, []).append(er.payload_path)
+
+    storey_jobs: list[tuple[str, Path, list[Path]]] = []
+    for orr in overall_results:
+        if orr.payload_path is None:
+            continue
+        storey_jobs.append((
+            orr.storey_id,
+            orr.payload_path,
+            sorted(enlarged_by_storey.get(orr.storey_id, [])),
+        ))
+
+    _emit(progress, "stage_started", {"stage": "reconcile", "storey_count": len(storey_jobs)})
+    logger.info(f"Stage 4 — reconcile: {len(storey_jobs)} storey(s)")
+
+    storey_results: list[StoreyReconcileResult] = []
+    for storey_id, overall_path, enlarged_paths in storey_jobs:
+        try:
+            r = reconcile_storey(overall_path, enlarged_paths, out_dir)
+        except Exception as exc:                       # noqa: BLE001
+            logger.exception(f"reconcile_storey failed on {storey_id}: {exc}")
+            continue
+        storey_results.append(r)
+
+    elev_payloads = [er.payload_path for er in elevation_results if er.payload_path is not None]
+    sect_payloads = [sr.payload_path for sr in section_results   if sr.payload_path is not None]
+
+    project_result: ProjectReconcileResult | None = None
+    try:
+        project_result = reconcile_project(elev_payloads, sect_payloads, out_dir, meta=meta)
+    except Exception as exc:                           # noqa: BLE001
+        logger.exception(f"reconcile_project failed: {exc}")
+
+    summary = {
+        "storey_count":         len(storey_results),
+        "labelled_columns":     sum(
+            sum(1 for c in r.columns if c.label) for r in storey_results
+        ),
+        "label_missing":        sum(
+            sum(1 for c in r.columns if "label_missing" in c.flags) for r in storey_results
+        ),
+        "label_conflicts":      sum(
+            sum(1 for c in r.columns if any(f.startswith("label_conflict") for f in c.flags))
+            for r in storey_results
+        ),
+        "level_count":          0 if project_result is None else len(project_result.levels),
+        "section_id_count":     0 if project_result is None else len(project_result.slabs["section_ids"]),
+    }
+    _write_reconcile_report(workspace, storey_results, project_result, summary)
+    _emit(progress, "stage_completed", {"stage": "reconcile", **summary})
+    logger.info(
+        f"Stage 4 done — storeys={summary['storey_count']} "
+        f"labelled_columns={summary['labelled_columns']} "
+        f"missing={summary['label_missing']} conflicts={summary['label_conflicts']}"
+    )
+    return storey_results, project_result
+
+
+def _write_reconcile_report(
+    workspace:       Workspace,
+    storey_results:  list[StoreyReconcileResult],
+    project_result:  ProjectReconcileResult | None,
+    summary:         dict,
+) -> None:
+    payload = {
+        "summary": summary,
+        "storeys": [
+            {
+                "storey_id":       r.storey_id,
+                "overall_path":    str(r.overall_path),
+                "enlarged_paths":  [str(p) for p in r.enlarged_paths],
+                "payload_path":    None if r.payload_path is None else str(r.payload_path),
+                "column_count":    len(r.columns),
+                "labelled":        sum(1 for c in r.columns if c.label),
+                "label_missing":   sum(1 for c in r.columns if "label_missing" in c.flags),
+                "label_conflicts": sum(1 for c in r.columns
+                                       if any(f.startswith("label_conflict") for f in c.flags)),
+                "flags":           r.flags,
+            }
+            for r in storey_results
+        ],
+        "project": (
+            None if project_result is None else {
+                "payload_path": None if project_result.payload_path is None
+                                else str(project_result.payload_path),
+                "level_count":  len(project_result.levels),
+                "slab_section_ids": project_result.slabs.get("section_ids", []),
+                "flags":        project_result.flags,
+            }
+        ),
+    }
+    out = workspace.output / "_reconcile_report.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w") as f:
+        json.dump(payload, f, indent=2)
 
 
 def _run_section(
