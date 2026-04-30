@@ -1,2 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Job outputs (per PLAN.md §2 — single-shot, ephemeral)
+data/
+
+# Logs
+logs/*.log
+logs/*.jsonl
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Secrets
+.env
+.env.local
+*_key.txt
+
+# Large model weight (>100MB GitHub limit; ship out-of-band)
 ml/weights/structural-framing-detect.pt
-2026-04-29-182024-cant-push-refs-to-remote-try-running-pull-fir.txt
