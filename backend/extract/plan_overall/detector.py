@@ -276,16 +276,22 @@ def _extract_lines(
 def _drop_spacing_outliers(
     positions: list[float],
     labels:    list[str],
-    factor:    float = 1.7,
+    hi_factor: float = 1.7,
+    lo_factor: float = 0.6,
 ) -> tuple[list[float], list[str]]:
-    """Drop endpoint labels whose neighbour-gap is > factor × median gap.
+    """Drop endpoint labels whose neighbour-gap deviates from the median.
 
-    Real grid bubbles are uniformly spaced (TGCH = 8400 mm = ~124 px @150 dpi).
-    Stray non-bubble labels caught by the margin filter (e.g. legend tokens
-    like 'TY' in the right margin) typically sit far past the last real
-    bubble, so their gap to the nearest neighbour is dramatically larger
-    than the median. Iteratively trim from each end until both endpoints
-    have a gap within tolerance.
+    Real grid bubbles are uniformly spaced (TGCH = 8400 mm = ~124 px @150 dpi
+    on -00 plans, ~248 px on -01..04 enlarged at 4× scale). Stray non-bubble
+    labels caught by the margin filter come in two flavours we need to drop:
+
+      • Far-flung outliers (e.g. legend "TY" past the last real bubble in
+        L3-04 with a 317 px gap vs 248 px median) — gap > hi_factor × med.
+      • Close-in stragglers (e.g. legend "TY" only 126 px from the last
+        real bubble in L3-02) — gap < lo_factor × med.
+
+    Iteratively trim from each end until both endpoints have a gap within
+    [lo_factor, hi_factor] of the median.
     """
     if len(positions) < 4:
         return positions, labels
@@ -296,11 +302,11 @@ def _drop_spacing_outliers(
             break
         first_gap = gaps[0]
         last_gap  = gaps[-1]
-        if first_gap > factor * med:
+        if first_gap > hi_factor * med or first_gap < lo_factor * med:
             positions = positions[1:]
             labels    = labels[1:]
             continue
-        if last_gap > factor * med:
+        if last_gap > hi_factor * med or last_gap < lo_factor * med:
             positions = positions[:-1]
             labels    = labels[:-1]
             continue

@@ -29,7 +29,8 @@ from backend.classify.rules import FilenameRule
 from backend.classify.types import DrawingClass
 from backend.core.meta_yaml import MetaYaml
 from backend.core.workspace import Workspace
-from backend.extract.plan_overall import OverallExtractResult, extract_overall
+from backend.extract.plan_enlarged import EnlargedExtractResult, extract_enlarged
+from backend.extract.plan_overall  import OverallExtractResult,  extract_overall
 from backend.ingest.ingest import IngestedFile, ingest, walk_uploads
 
 # Progress callback signature: (event_type, payload) -> None.
@@ -44,6 +45,7 @@ class JobResult:
     manifest:        list[IngestedFile]
     classification:  list[ClassifiedItem] | None         = None
     plan_overall:    list[OverallExtractResult] | None   = None
+    plan_enlarged:   list[EnlargedExtractResult] | None  = None
 
 
 def _emit(progress: ProgressFn, event_type: str, payload: dict) -> None:
@@ -98,11 +100,15 @@ def run(
     overall_results = _run_plan_overall(workspace, classified, progress,
                                         run_yolo=run_yolo_columns)
 
+    enlarged_results = _run_plan_enlarged(workspace, classified, progress,
+                                          run_yolo=run_yolo_columns)
+
     return JobResult(
         workspace      = workspace,
         manifest       = manifest,
         classification = classified,
         plan_overall   = overall_results,
+        plan_enlarged  = enlarged_results,
     )
 
 
@@ -159,6 +165,95 @@ def _run_plan_overall(
         f"with_grid={summary['with_grid']} rejected={summary['rejected']}",
     )
     return results
+
+
+def _run_plan_enlarged(
+    workspace:  Workspace,
+    classified: list[ClassifiedItem],
+    progress:   ProgressFn,
+    run_yolo:   bool = True,
+) -> list[EnlargedExtractResult]:
+    """Stage 3A-2 — type/dim/shape on every STRUCT_PLAN_ENLARGED page (PLAN.md §3A-2).
+
+    Page-local grid-mm; Stage 8 (Reconcile) translates to the global -00 grid.
+    """
+    items = [
+        c for c in classified
+        if c.result.drawing_class == DrawingClass.STRUCT_PLAN_ENLARGED
+    ]
+    _emit(progress, "stage_started", {"stage": "extract_plan_enlarged", "count": len(items)})
+    logger.info(f"Stage 3A-2 — extract_plan_enlarged: {len(items)} page(s)")
+
+    out_dir = workspace.extracted / "plan_enlarged"
+    results: list[EnlargedExtractResult] = []
+    for c in items:
+        try:
+            r = extract_enlarged(c.pdf_path, c.page_index, out_dir, run_yolo=run_yolo)
+        except Exception as exc:                       # noqa: BLE001
+            logger.exception(f"extract_enlarged failed on {c.pdf_path.name}: {exc}")
+            results.append(EnlargedExtractResult(
+                storey_id          = c.pdf_path.stem,
+                page_number        = 0,
+                page_region        = "unknown",
+                pdf_path           = c.pdf_path,
+                page_index         = c.page_index,
+                has_grid           = False,
+                affine_residual_px = None,
+                column_count       = 0,
+                payload_path       = None,
+                error              = f"{type(exc).__name__}: {exc}",
+                flags              = ["extractor_crashed"],
+            ))
+            continue
+        results.append(r)
+        logger.info(
+            f"  {r.storey_id}-{r.page_number:02d} ({r.page_region}): "
+            f"has_grid={r.has_grid} columns={r.column_count}",
+        )
+
+    summary = {
+        "total":                 len(results),
+        "with_grid":             sum(1 for r in results if r.has_grid),
+        "rejected":              sum(1 for r in results if not r.has_grid),
+        "total_columns":         sum(r.column_count for r in results),
+    }
+    _write_enlarged_report(workspace, results, summary)
+    _emit(progress, "stage_completed", {"stage": "extract_plan_enlarged", **summary})
+    logger.info(
+        f"Stage 3A-2 done — {summary['total']} page(s) | "
+        f"with_grid={summary['with_grid']} columns={summary['total_columns']}",
+    )
+    return results
+
+
+def _write_enlarged_report(
+    workspace: Workspace,
+    results:   list[EnlargedExtractResult],
+    summary:   dict,
+) -> None:
+    payload = {
+        "summary": summary,
+        "items": [
+            {
+                "storey_id":          r.storey_id,
+                "page_number":        r.page_number,
+                "page_region":        r.page_region,
+                "pdf":                str(r.pdf_path),
+                "page_index":         r.page_index,
+                "has_grid":           r.has_grid,
+                "affine_residual_px": r.affine_residual_px,
+                "column_count":       r.column_count,
+                "payload_path":       None if r.payload_path is None else str(r.payload_path),
+                "error":              r.error,
+                "flags":              r.flags,
+            }
+            for r in results
+        ],
+    }
+    out = workspace.output / "_extract_plan_enlarged_report.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w") as f:
+        json.dump(payload, f, indent=2)
 
 
 def _write_overall_report(
