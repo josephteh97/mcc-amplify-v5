@@ -21,6 +21,11 @@ data/
 logs/*.log
 logs/*.jsonl
 
+# Frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
 # Editor / OS
 .vscode/
 .idea/
