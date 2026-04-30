@@ -29,7 +29,7 @@ from statistics import median
 
 from loguru import logger
 
-from backend.core.grid_mm   import LEVEL_AGREEMENT_TOL_MM
+from backend.core.grid_mm   import DEFAULT_LEVEL_ALIASES, LEVEL_AGREEMENT_TOL_MM
 from backend.core.meta_yaml import MetaYaml
 
 
@@ -53,17 +53,21 @@ def _build_alias_resolver(
 
     Returns ``(resolver(name) → canonical, normalised_alias_map)``.
     """
-    raw = (meta.aliases.levels if meta is not None else {}) or {}
-    # Forward map: source.upper() → target (preserve target casing for output)
+    # Start from the SG-convention default map; user overrides win on conflict.
     forward: dict[str, str] = {}
+    for src, tgt in DEFAULT_LEVEL_ALIASES.items():
+        forward[src.strip().upper()] = tgt.strip()
+    raw = (meta.aliases.levels if meta is not None else {}) or {}
     for src, tgt in raw.items():
         if not src or not tgt:
             continue
         forward[src.strip().upper()] = tgt.strip()
-    # Allow declaring the value-side too (idempotent self-mapping).
-    targets_seen = {v.strip().upper() for v in raw.values() if v}
+    # Allow declaring the value-side too (idempotent self-mapping) so the
+    # gate validator's lookup-by-name works whether the storey id is
+    # already in canonical form or in raw architectural form.
+    targets_seen = {v for v in forward.values() if v}
     for tgt in targets_seen:
-        forward.setdefault(tgt, tgt)
+        forward.setdefault(tgt.upper(), tgt)
 
     def resolve(name: str) -> str:
         if not name:

@@ -53,3 +53,29 @@ FLAG_LABEL_INFERRED_PFX:   str = "label_inferred_from_neighbour"
 FLAG_ORIENTATION_AMBIG:    str = "orientation_ambiguous"
 GATE_SEVERITY_HARD:        str = "hard"
 GATE_SEVERITY_WARN:        str = "warn"
+
+# Default architectural ↔ structural level-name aliases for SG building-
+# code conventions (PLAN.md §3B). Architectural elevations almost always
+# read 'BASEMENT N' / 'NTH STOREY' / 'ROOF', while structural plan
+# filenames carry short codes 'BN' / 'LN' / 'RF'. Without normalisation
+# the project reconciler emits both as separate levels and Stage 5B's
+# base_level_present gate fails for every storey. meta.yaml.aliases.levels
+# overrides any of these.
+def _build_default_level_aliases() -> dict[str, str]:
+    out: dict[str, str] = {
+        "ROOF":         "RF",
+        "PARAPET":      "UR",           # upper roof / parapet level
+        "MEZZ":         "M1",
+        "MEZZANINE":    "M1",
+        "GROUND FLOOR": "GF",
+        "GROUND LEVEL": "GL",
+    }
+    for n in range(1, 6):
+        out[f"BASEMENT {n}"] = f"B{n}"
+    suffixes = {1: "ST", 2: "ND", 3: "RD"}
+    for n in range(1, 31):
+        suf = suffixes.get(n if n < 20 else n % 10, "TH")
+        out[f"{n}{suf} STOREY"] = f"L{n}"
+    return out
+
+DEFAULT_LEVEL_ALIASES: dict[str, str] = _build_default_level_aliases()

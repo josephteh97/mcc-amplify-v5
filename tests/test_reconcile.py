@@ -222,6 +222,8 @@ def _write_synthetic_elev(path: Path, levels: list[dict]) -> None:
 
 
 def test_merge_elevation_levels_groups_and_flags(tmp_path: Path) -> None:
+    """`BASEMENT 1` and `1ST STOREY` are normalised to `B1` and `L1` via
+    the SG-convention default alias map (grid_mm.DEFAULT_LEVEL_ALIASES)."""
     e1 = tmp_path / "elev1.elev.json"
     e2 = tmp_path / "elev2.elev.json"
     _write_synthetic_elev(e1, [
@@ -234,29 +236,32 @@ def test_merge_elevation_levels_groups_and_flags(tmp_path: Path) -> None:
     ])
     levels, flags = _merge_elevation_levels([e1, e2])
     by = {l["name"]: l for l in levels}
-    assert by["BASEMENT 1"]["rl_mm"] in (3510, 3500, 3520)   # median of {3500, 3520}
-    # 1ST STOREY varies 9500 vs 9700 — beyond LEVEL_AGREEMENT_TOL_MM=25.
-    assert any("1ST STOREY" in f and "disagreement" in f for f in flags)
+    assert by["B1"]["rl_mm"] in (3510, 3500, 3520)   # median of {3500, 3520}
+    # 1ST STOREY → L1; spread 9500↔9700 = 200 mm beyond LEVEL_AGREEMENT_TOL_MM.
+    assert any("L1" in f and "disagreement" in f for f in flags)
 
 
 # ── meta.yaml.aliases.levels — name normalisation ────────────────────────────
 
 def test_alias_resolver_collapses_both_directions() -> None:
+    """User-declared aliases override the SG defaults; the resolver still
+    accepts both sides idempotently. We assert against a non-default
+    mapping so the test isn't shadowed by DEFAULT_LEVEL_ALIASES."""
     meta = MetaYaml(
         project = ProjectMeta(id="X"),
         aliases = AliasesMeta(levels={
-            "BASEMENT 1": "B1",
-            "1ST STOREY": "L1",
+            "PODIUM ROOF": "PR",
+            "TRANSFER":    "TR",
         }),
     )
     resolve, fmap = _build_alias_resolver(meta)
-    # Forward: arch full-name → structural code.
+    assert resolve("PODIUM ROOF") == "PR"
+    assert resolve("podium roof") == "PR"     # case-insensitive lookup
+    assert resolve("PR") == "PR"               # target side is idempotent
+    # SG defaults remain — BASEMENT 1 still resolves even without a user override.
     assert resolve("BASEMENT 1") == "B1"
-    assert resolve("basement 1") == "B1"     # case-insensitive lookup
-    # Reverse: target side recognised as canonical (no-op resolution).
-    assert resolve("B1") == "B1"
-    # Unmapped names pass through unchanged.
-    assert resolve("ROOF") == "ROOF"
+    # Truly unmapped names pass through unchanged.
+    assert resolve("UFO LANDING PAD") == "UFO LANDING PAD"
     assert resolve("") == ""
 
 
@@ -295,16 +300,18 @@ def test_alias_collapses_arch_and_structural_levels(tmp_path: Path) -> None:
 
 
 def test_alias_does_not_affect_unmapped_names(tmp_path: Path) -> None:
+    """Names absent from BOTH the SG default map and the user override
+    pass through unchanged."""
     e1 = tmp_path / "e.elev.json"
     _write_synthetic_elev(e1, [
-        {"name": "ROOF", "rl_mm": 30000, "source_pdf": "e.pdf"},
+        {"name": "TRANSFER PLATE", "rl_mm": 30000, "source_pdf": "e.pdf"},
     ])
     meta = MetaYaml(
         project = ProjectMeta(id="X"),
         aliases = AliasesMeta(levels={"BASEMENT 1": "B1"}),
     )
     levels, _ = _merge_elevation_levels([e1], meta=meta)
-    assert levels[0]["name"] == "ROOF"
+    assert levels[0]["name"] == "TRANSFER PLATE"
     assert "aliased_from" not in levels[0]   # no alias applied
 
 
@@ -327,18 +334,20 @@ def test_meta_override_resolves_through_alias(tmp_path: Path) -> None:
 
 
 def test_meta_levels_override(tmp_path: Path) -> None:
+    """Override declared as `BASEMENT 1` flows through the SG default
+    aliases (BASEMENT 1 → B1) and lands on the merged B1 entry."""
     elev = tmp_path / "e.elev.json"
     _write_synthetic_elev(elev, [
         {"name": "BASEMENT 1", "rl_mm": 3500, "source_pdf": "e.pdf"},
     ])
     meta = MetaYaml(
-        project=ProjectMeta(id="X", name="X"),
+        project=ProjectMeta(id="X"),
         levels={"BASEMENT 1": LevelMeta(rl_mm=4000.0, source="manual")},
     )
     r = reconcile_project([elev], [], tmp_path, meta=meta)
     by = {l["name"]: l for l in r.levels}
-    assert by["BASEMENT 1"]["rl_mm"] == 4000
-    assert by["BASEMENT 1"]["source"] == "meta.yaml"
+    assert by["B1"]["rl_mm"]  == 4000
+    assert by["B1"]["source"] == "meta.yaml"
 
 
 def test_project_slabs_default_thickness_from_meta(tmp_path: Path) -> None:
