@@ -79,34 +79,32 @@ function StoreyDropdown({ storeys, value, onChange, disabled }) {
 }
 
 export function Viewer({ jobId }) {
-  const [storeys, setStoreys] = useState([]);
+  // storeys === null means "still loading"; [] means "loaded, none available".
+  const [storeys, setStoreys] = useState(null);
   const [active,  setActive]  = useState(null);
   const [error,   setError]   = useState(null);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!jobId) return;
     let cancelled = false;
-    setLoading(true);
+    setStoreys(null);
+    setError(null);
     fetchStoreys(jobId)
       .then((data) => {
         if (cancelled) return;
-        setStoreys(data.storeys || []);
-        // Auto-select the first storey that has a GLTF.
-        const first = (data.storeys || []).find((s) => s.has_gltf);
+        const list = data.storeys || [];
+        setStoreys(list);
+        const first = list.find((s) => s.has_gltf);
         if (first) setActive(first.storey_id);
       })
-      .catch((e) => !cancelled && setError(e.message))
-      .finally(() => !cancelled && setLoading(false));
+      .catch((e) => !cancelled && setError(e.message));
     return () => { cancelled = true; };
   }, [jobId]);
 
   if (!jobId) return null;
-  if (loading) return <div className="viewer-empty muted">Loading storeys…</div>;
-  if (error)   return <div className="viewer-empty error">{error}</div>;
-  if (!storeys.length) return null;
-  const playable = storeys.filter((s) => s.has_gltf);
-  if (!playable.length) {
+  if (error)         return <div className="viewer-empty error">{error}</div>;
+  if (storeys === null) return <div className="viewer-empty muted">Loading storeys…</div>;
+  if (!storeys.some((s) => s.has_gltf)) {
     return <div className="viewer-empty muted">No storey passed Stage 5B — see review queue.</div>;
   }
 

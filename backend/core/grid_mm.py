@@ -43,3 +43,13 @@ SECTION_RE:    str = r"^\d{3,4}\s*[xX]\s*\d{3,4}$"
 DIA_RE:        str = r"^[ØøD]\s*\d{3,4}$|^\d{3,4}\s*(?:DIA|dia|Ø|ø)$"
 LEVEL_NAME_RE: str = r"^(B\d|L\d+|RF|UR|MEZZ|GF|GL)\b"
 RL_RE:         str = r"[+\-]?\d+(?:\.\d+)?\s*(?:mm|m)?"
+
+# Flag-string vocabulary (PLAN.md §11). Centralised so backend producers
+# and the API aggregator share one truth — typos in either side would
+# otherwise silently produce empty review queues.
+FLAG_LABEL_MISSING:        str = "label_missing"
+FLAG_LABEL_CONFLICT_PFX:   str = "label_conflict"
+FLAG_LABEL_INFERRED_PFX:   str = "label_inferred_from_neighbour"
+FLAG_ORIENTATION_AMBIG:    str = "orientation_ambiguous"
+GATE_SEVERITY_HARD:        str = "hard"
+GATE_SEVERITY_WARN:        str = "warn"

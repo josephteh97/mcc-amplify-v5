@@ -1,8 +1,6 @@
 import React from 'react';
 
-function basename(path) {
-  return path.split('/').pop();
-}
+import { basename } from '../util.js';
 
 export function Manifest({ manifest }) {
   return (

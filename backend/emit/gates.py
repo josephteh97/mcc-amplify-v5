@@ -79,7 +79,8 @@ class StoreyGates:
             "storey_height_mm":  self.storey_height_mm,
             "slab_thickness_mm": self.slab_thickness_mm,
             "gates": [
-                {"name": g.name, "passed": g.passed, "detail": g.detail}
+                {"name": g.name, "passed": g.passed,
+                 "detail": g.detail, "severity": g.severity}
                 for g in self.gates
             ],
         }

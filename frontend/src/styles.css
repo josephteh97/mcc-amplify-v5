@@ -282,7 +282,6 @@ button.secondary:hover { border-color: var(--muted); }
   overflow: hidden;
 }
 .review-section-empty  { opacity: 0.65; }
-.review-section-active { }
 
 .review-section-header {
   width: 100%;

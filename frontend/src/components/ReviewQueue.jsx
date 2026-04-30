@@ -1,12 +1,10 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
+
+import { basename } from '../util.js';
 
 // Surfaces the strict-mode review queue (PLAN.md §11) — every conflict,
 // unresolved column, missing-coverage flag and DISCARD record the human
 // must adjudicate before the RVTs can ship without caveat.
-
-function basename(p) {
-  return (p || '').split('/').pop() || '';
-}
 
 function Section({ title, count, children, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -30,40 +28,62 @@ function Section({ title, count, children, defaultOpen = false }) {
   );
 }
 
-function EmptyState({ message = 'Nothing to review.' }) {
-  return <div className="review-empty">{message}</div>;
+// Each review row is a {name, meta, detail} triple. ReviewList renders
+// the empty state when items=[] so callers don't repeat that branch.
+function ReviewList({ items, empty, render }) {
+  if (!items.length) return <div className="review-empty">{empty}</div>;
+  return (
+    <ul className="review-list">
+      {items.map((it, i) => {
+        const { name, meta, detail, rowClass } = render(it, i);
+        return (
+          <li key={i} className={rowClass}>
+            <span className="review-name">{name}</span>
+            <span className="review-meta">{meta}</span>
+            <span className="review-detail">{detail}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+// Render a column's dimension signature regardless of shape.
+function formatDims(d) {
+  if (d.diameter_mm != null) return `Ø${d.diameter_mm}`;
+  if (d.dim_along_x_mm != null && d.dim_along_y_mm != null) {
+    return `${d.dim_along_x_mm}×${d.dim_along_y_mm}`;
+  }
+  return '';
 }
 
 // ── Per-section renderers ───────────────────────────────────────────────────
 
 function DiscardedFiles({ items }) {
-  if (!items.length) return <EmptyState message="No DISCARD pages." />;
   return (
-    <ul className="review-list">
-      {items.map((it, i) => (
-        <li key={i}>
-          <span className="review-name">{basename(it.pdf)}</span>
-          <span className="review-meta">page {it.page_index ?? 0}</span>
-          <span className="review-meta">tier: {it.tier}</span>
-          <span className="review-detail">{it.reason}</span>
-        </li>
-      ))}
-    </ul>
+    <ReviewList
+      items={items}
+      empty="No DISCARD pages."
+      render={(it) => ({
+        name:   basename(it.pdf),
+        meta:   <>page {it.page_index ?? 0} · tier: {it.tier}</>,
+        detail: it.reason,
+      })}
+    />
   );
 }
 
 function UnresolvedClassifications({ items }) {
-  if (!items.length) return <EmptyState message="All pages resolved by tiers 1–4." />;
   return (
-    <ul className="review-list">
-      {items.map((it, i) => (
-        <li key={i}>
-          <span className="review-name">{basename(it.pdf)}</span>
-          <span className="review-meta">page {it.page_index ?? 0}</span>
-          <span className="review-detail">{it.reason}</span>
-        </li>
-      ))}
-    </ul>
+    <ReviewList
+      items={items}
+      empty="All pages resolved by tiers 1–4."
+      render={(it) => ({
+        name:   basename(it.pdf),
+        meta:   `page ${it.page_index ?? 0}`,
+        detail: it.reason,
+      })}
+    />
   );
 }
 
@@ -71,29 +91,25 @@ function ReconcileConflicts({ storeys }) {
   const flat = storeys.flatMap((s) =>
     s.conflicts.map((c) => ({ ...c, storey_id: s.storey_id })),
   );
-  if (!flat.length) return <EmptyState message="No label conflicts across storeys." />;
   return (
-    <ul className="review-list">
-      {flat.map((c, i) => (
-        <li key={i}>
-          <span className="review-name">{c.storey_id} · col #{c.canonical_idx}</span>
-          <span className="review-detail">
-            {c.label_candidates.map((lc, j) => (
-              <span key={j} className="review-chip">
-                {lc.label}/{lc.shape}
-                {lc.dim_along_x_mm != null && lc.dim_along_y_mm != null
-                  ? ` ${lc.dim_along_x_mm}×${lc.dim_along_y_mm}`
-                  : lc.diameter_mm != null ? ` Ø${lc.diameter_mm}` : ''}
-                {' '}
-                <span className="review-chip-meta">
-                  {lc.source_pdf ? basename(lc.source_pdf) : ''}{lc.distance_mm != null ? ` · Δ${lc.distance_mm} mm` : ''}
-                </span>
-              </span>
-            ))}
+    <ReviewList
+      items={flat}
+      empty="No label conflicts across storeys."
+      render={(c) => ({
+        name: `${c.storey_id} · col #${c.canonical_idx}`,
+        meta: '',
+        detail: c.label_candidates.map((lc, j) => (
+          <span key={j} className="review-chip">
+            {lc.label}/{lc.shape} {formatDims(lc)}
+            {' '}
+            <span className="review-chip-meta">
+              {lc.source_pdf ? basename(lc.source_pdf) : ''}
+              {lc.distance_mm != null ? ` · Δ${lc.distance_mm} mm` : ''}
+            </span>
           </span>
-        </li>
-      ))}
-    </ul>
+        )),
+      })}
+    />
   );
 }
 
@@ -102,22 +118,23 @@ function ReconcileMissing({ storeys }) {
   const rows = storeys
     .map((s) => ({ storey_id: s.storey_id, count: s.missing.length, summary: s.summary }))
     .filter((r) => r.count > 0);
-  if (!rows.length) return <EmptyState message="Every canonical column carries a label." />;
   return (
-    <ul className="review-list">
-      {rows.map((r, i) => (
-        <li key={i}>
-          <span className="review-name">{r.storey_id}</span>
-          <span className="review-meta">{r.count} unlabelled</span>
-          <span className="review-detail">
-            {r.summary?.canonical_total != null
-              ? `${r.summary.labelled}/${r.summary.canonical_total} labelled`
-              : ''}
-            {r.summary?.label_inferred ? ` · ${r.summary.label_inferred} inferred from neighbours` : ''}
-          </span>
-        </li>
-      ))}
-    </ul>
+    <ReviewList
+      items={rows}
+      empty="Every canonical column carries a label."
+      render={(r) => {
+        const s = r.summary || {};
+        const inferred = s.label_inferred ? ` · ${s.label_inferred} inferred from neighbours` : '';
+        const detail = s.canonical_total != null
+          ? `${s.labelled}/${s.canonical_total} labelled${inferred}`
+          : '';
+        return {
+          name:   r.storey_id,
+          meta:   `${r.count} unlabelled`,
+          detail,
+        };
+      }}
+    />
   );
 }
 
@@ -125,30 +142,27 @@ function ResolveRejects({ storeys }) {
   const flat = storeys.flatMap((s) =>
     (s.rejected || []).map((r) => ({ ...r, storey_id: s.storey_id })),
   );
-  if (!flat.length) return <EmptyState message="No placements rejected by Stage 5A." />;
   return (
-    <ul className="review-list">
-      {flat.map((r, i) => (
-        <li key={i}>
-          <span className="review-name">{r.storey_id} · col #{r.canonical_idx}</span>
-          <span className="review-meta">{r.reason}</span>
-          <span className="review-detail">
-            {r.label ? `label=${r.label} ` : ''}shape={r.shape}
-            {r.dim_along_x_mm != null ? ` ${r.dim_along_x_mm}×${r.dim_along_y_mm}` : ''}
-            {r.diameter_mm != null ? ` Ø${r.diameter_mm}` : ''}
-            {' · '}{r.audit}
-          </span>
-        </li>
-      ))}
-    </ul>
+    <ReviewList
+      items={flat}
+      empty="No placements rejected by Stage 5A."
+      render={(r) => ({
+        name:   `${r.storey_id} · col #${r.canonical_idx}`,
+        meta:   r.reason,
+        detail: <>
+          {r.label ? `label=${r.label} ` : ''}shape={r.shape} {formatDims(r)}
+          {' · '}{r.audit}
+        </>,
+      })}
+    />
   );
 }
 
 function EmitGates({ storeys }) {
-  const failed = storeys.filter((s) => s.hard_failures && s.hard_failures.length > 0);
-  const warned = storeys.filter((s) => s.warnings && s.warnings.length > 0);
+  const failed = storeys.filter((s) => s.hard_failures.length > 0);
+  const warned = storeys.filter((s) => s.warnings.length > 0);
   if (!failed.length && !warned.length) {
-    return <EmptyState message="All storeys passed every gate." />;
+    return <div className="review-empty">All storeys passed every gate.</div>;
   }
   return (
     <ul className="review-list">
@@ -183,18 +197,20 @@ function EmitGates({ storeys }) {
 export function ReviewQueue({ review }) {
   if (!review) return null;
   const { classification, reconcile, resolve, emit } = review;
-  const counts = {
-    discarded:    classification.discarded.length,
-    unresolved:   classification.unresolved.length,
-    conflicts:    reconcile.storeys.reduce((n, s) => n + s.conflicts.length, 0),
-    missing:      reconcile.storeys.reduce((n, s) => n + s.missing.length, 0),
-    rejected:     resolve.storeys.reduce((n, s) => n + (s.rejected || []).length, 0),
-    gateFailed:   emit.storeys.filter((s) => s.hard_failures.length > 0).length,
-    gateWarned:   emit.storeys.filter((s) => s.warnings.length > 0).length,
-  };
-  const total =
-    counts.discarded + counts.unresolved + counts.conflicts +
-    counts.missing + counts.rejected + counts.gateFailed + counts.gateWarned;
+  const counts = useMemo(() => {
+    const sumLen = (storeys, key) =>
+      storeys.reduce((n, s) => n + (s[key]?.length || 0), 0);
+    return {
+      discarded:    classification.discarded.length,
+      unresolved:   classification.unresolved.length,
+      conflicts:    sumLen(reconcile.storeys, 'conflicts'),
+      missing:      sumLen(reconcile.storeys, 'missing'),
+      rejected:     sumLen(resolve.storeys,   'rejected'),
+      gateFailed:   emit.storeys.filter((s) => s.hard_failures.length > 0).length,
+      gateWarned:   emit.storeys.filter((s) => s.warnings.length > 0).length,
+    };
+  }, [classification, reconcile, resolve, emit]);
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
 
   return (
     <section className="review-queue">

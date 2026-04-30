@@ -12,9 +12,31 @@ from loguru import logger
 
 from backend.api.jobs import JOBS_ROOT, job_store, run_job
 from backend.api.websocket import broadcaster
+from backend.core.grid_mm import (
+    FLAG_LABEL_CONFLICT_PFX,
+    FLAG_LABEL_MISSING,
+    GATE_SEVERITY_HARD,
+    GATE_SEVERITY_WARN,
+)
 from backend.core.workspace import Workspace
 
 router = APIRouter()
+
+
+def _read_json(path: Path, label: str) -> dict | None:
+    """Read + parse a JSON report, returning None on missing/corrupt.
+
+    Centralises the parse-or-warn pattern that every artefact reader on
+    this module needs (one /review request can pull from six files).
+    Callers decide whether ``None`` translates to 404 or empty payload.
+    """
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception as exc:                          # noqa: BLE001
+        logger.warning(f"failed to parse {label} at {path}: {exc}")
+        return None
 
 
 @router.post("/upload")
@@ -81,14 +103,8 @@ async def get_storeys(job_id: str) -> dict:
     if job.workspace_root is None:
         return {"storeys": []}
 
-    emit_path = job.workspace_root / "output" / "_emit_report.json"
-    if not emit_path.exists():
-        return {"storeys": []}
-
-    try:
-        emit = json.loads(emit_path.read_text())
-    except Exception as exc:
-        logger.warning(f"storeys: emit parse failed: {exc}")
+    emit = _read_json(job.workspace_root / "output" / "_emit_report.json", "emit report")
+    if emit is None:
         return {"storeys": []}
 
     out: list[dict] = []
@@ -127,14 +143,9 @@ async def get_gltf(job_id: str, storey_id: str):
     if job.workspace_root is None:
         raise HTTPException(404, "Workspace not staged yet")
 
-    emit_path = job.workspace_root / "output" / "_emit_report.json"
-    if not emit_path.exists():
+    emit = _read_json(job.workspace_root / "output" / "_emit_report.json", "emit report")
+    if emit is None:
         raise HTTPException(404, "Stage 5B has not run yet")
-
-    try:
-        emit = json.loads(emit_path.read_text())
-    except Exception as exc:
-        raise HTTPException(500, f"Failed to read emit report: {exc}")
 
     gltf_path: Path | None = None
     for s in emit.get("storeys", []):
@@ -143,8 +154,10 @@ async def get_gltf(job_id: str, storey_id: str):
             break
     if gltf_path is None or not gltf_path.exists():
         raise HTTPException(404, f"No GLTF for storey {storey_id!r}")
-    return FileResponse(gltf_path, media_type="model/gltf+json",
-                        filename=f"{storey_id}.gltf")
+    # No `filename=` — that adds Content-Disposition: attachment which
+    # makes the browser download the file instead of streaming it into
+    # the in-page R3F viewer.
+    return FileResponse(gltf_path, media_type="model/gltf+json")
 
 
 @router.get("/jobs/{job_id}/review")
@@ -172,109 +185,101 @@ async def get_review(job_id: str):
     return _build_review_payload(job.workspace_root)
 
 
+def _read_classification_review(out_dir: Path) -> dict:
+    discarded:  list[dict] = []
+    unresolved: list[dict] = []
+    cls = _read_json(out_dir / "_classification_report.json", "classification")
+    if cls is None:
+        return {"discarded": discarded, "unresolved": unresolved}
+    for it in cls.get("items", []):
+        row = {k: it.get(k) for k in ("pdf", "page_index", "tier", "confidence", "reason")}
+        if it.get("class") == "DISCARD":
+            discarded.append(row)
+        if it.get("tier") == "unresolved" or it.get("class") == "UNKNOWN":
+            unresolved.append(row)
+    return {"discarded": discarded, "unresolved": unresolved}
+
+
+def _read_reconcile_review(rec_dir: Path) -> list[dict]:
+    if not rec_dir.exists():
+        return []
+    out: list[dict] = []
+    for path in sorted(rec_dir.glob("*.reconciled.json")):
+        d = _read_json(path, f"reconcile {path.name}")
+        if d is None:
+            continue
+        cols = d.get("columns", [])
+        conflicts = [
+            {"canonical_idx":        c.get("canonical_idx"),
+             "canonical_grid_mm_xy": c.get("canonical_grid_mm_xy"),
+             "label_candidates":     c.get("label_candidates", []),
+             "flags":                c.get("flags", [])}
+            for c in cols
+            if any(f.startswith(FLAG_LABEL_CONFLICT_PFX) for f in (c.get("flags") or []))
+        ]
+        missing = [
+            {"canonical_idx":        c.get("canonical_idx"),
+             "canonical_grid_mm_xy": c.get("canonical_grid_mm_xy")}
+            for c in cols
+            if FLAG_LABEL_MISSING in (c.get("flags") or [])
+        ]
+        out.append({
+            "storey_id": d.get("storey_id"),
+            "summary":   d.get("summary", {}),
+            "conflicts": conflicts,
+            "missing":   missing,
+        })
+    return out
+
+
+def _read_resolve_review(out_dir: Path) -> list[dict]:
+    if not out_dir.exists():
+        return []
+    out: list[dict] = []
+    for path in sorted(out_dir.glob("*_review.json")):
+        d = _read_json(path, f"resolve {path.name}")
+        if d is None:
+            continue
+        out.append({
+            "storey_id": d.get("storey_id"),
+            "summary":   d.get("summary", {}),
+            "rejected":  d.get("items", []),
+        })
+    return out
+
+
+def _read_emit_review(out_dir: Path) -> list[dict]:
+    emit = _read_json(out_dir / "_emit_report.json", "emit report")
+    if emit is None:
+        return []
+    out: list[dict] = []
+    for s in emit.get("storeys", []):
+        gates = (s.get("gates") or {}).get("gates", [])
+        hard_failures = [g for g in gates if not g.get("passed") and g.get("severity") == GATE_SEVERITY_HARD]
+        warnings      = [g for g in gates if not g.get("passed") and g.get("severity") == GATE_SEVERITY_WARN]
+        out.append({
+            "storey_id":      s.get("storey_id"),
+            "succeeded":      s.get("succeeded"),
+            "skipped_reason": s.get("skipped_reason"),
+            "hard_failures":  hard_failures,
+            "warnings":       warnings,
+            "rvt_error":      s.get("rvt_error"),
+            "rvt_path":       s.get("rvt_path"),
+            "gltf_path":      s.get("gltf_path"),
+        })
+    return out
+
+
 def _build_review_payload(workspace_root: Path) -> dict:
     """Read the on-disk reports and compose the review aggregator payload."""
     out_dir       = workspace_root / "output"
     extracted_dir = workspace_root / "extracted"
-    payload = {
-        "classification": {"discarded": [], "unresolved": []},
-        "reconcile":      {"storeys":  []},
-        "resolve":        {"storeys":  []},
-        "emit":           {"storeys":  []},
+    return {
+        "classification": _read_classification_review(out_dir),
+        "reconcile":      {"storeys": _read_reconcile_review(extracted_dir / "reconcile")},
+        "resolve":        {"storeys": _read_resolve_review(out_dir)},
+        "emit":           {"storeys": _read_emit_review(out_dir)},
     }
-
-    # ── Stage 2 — classifier DISCARD + UNRESOLVED ────────────────────────────
-    cls_path = out_dir / "_classification_report.json"
-    if cls_path.exists():
-        try:
-            cls = json.loads(cls_path.read_text())
-            for it in cls.get("items", []):
-                row = {
-                    "pdf":         it.get("pdf"),
-                    "page_index":  it.get("page_index"),
-                    "tier":        it.get("tier"),
-                    "confidence":  it.get("confidence"),
-                    "reason":      it.get("reason"),
-                }
-                if it.get("class") == "DISCARD":
-                    payload["classification"]["discarded"].append(row)
-                if it.get("tier") == "unresolved" or it.get("class") == "UNKNOWN":
-                    payload["classification"]["unresolved"].append(row)
-        except Exception as exc:
-            logger.warning(f"review: classification parse failed: {exc}")
-
-    # ── Stage 4 — reconcile per storey ───────────────────────────────────────
-    rec_dir = extracted_dir / "reconcile"
-    if rec_dir.exists():
-        for path in sorted(rec_dir.glob("*.reconciled.json")):
-            try:
-                d = json.loads(path.read_text())
-            except Exception as exc:
-                logger.warning(f"review: failed to read {path.name}: {exc}")
-                continue
-            cols = d.get("columns", [])
-            conflicts = [
-                {
-                    "canonical_idx":        c.get("canonical_idx"),
-                    "canonical_grid_mm_xy": c.get("canonical_grid_mm_xy"),
-                    "label_candidates":     c.get("label_candidates", []),
-                    "flags":                c.get("flags", []),
-                }
-                for c in cols
-                if any(f.startswith("label_conflict") for f in (c.get("flags") or []))
-            ]
-            missing = [
-                {
-                    "canonical_idx":        c.get("canonical_idx"),
-                    "canonical_grid_mm_xy": c.get("canonical_grid_mm_xy"),
-                }
-                for c in cols
-                if "label_missing" in (c.get("flags") or [])
-            ]
-            payload["reconcile"]["storeys"].append({
-                "storey_id": d.get("storey_id"),
-                "summary":   d.get("summary", {}),
-                "conflicts": conflicts,
-                "missing":   missing,
-            })
-
-    # ── Stage 5A — resolve rejects (per storey review.json) ─────────────────
-    if out_dir.exists():
-        for path in sorted(out_dir.glob("*_review.json")):
-            try:
-                d = json.loads(path.read_text())
-            except Exception as exc:
-                logger.warning(f"review: failed to read {path.name}: {exc}")
-                continue
-            payload["resolve"]["storeys"].append({
-                "storey_id": d.get("storey_id"),
-                "summary":   d.get("summary", {}),
-                "rejected":  d.get("items", []),
-            })
-
-    # ── Stage 5B — emit gate status ─────────────────────────────────────────
-    emit_path = out_dir / "_emit_report.json"
-    if emit_path.exists():
-        try:
-            emit = json.loads(emit_path.read_text())
-            for s in emit.get("storeys", []):
-                gates = (s.get("gates") or {}).get("gates", [])
-                hard_failures = [g for g in gates if not g.get("passed") and g.get("severity") == "hard"]
-                warnings      = [g for g in gates if not g.get("passed") and g.get("severity") == "warn"]
-                payload["emit"]["storeys"].append({
-                    "storey_id":      s.get("storey_id"),
-                    "succeeded":      s.get("succeeded"),
-                    "skipped_reason": s.get("skipped_reason"),
-                    "hard_failures":  hard_failures,
-                    "warnings":       warnings,
-                    "rvt_error":      s.get("rvt_error"),
-                    "rvt_path":       s.get("rvt_path"),
-                    "gltf_path":      s.get("gltf_path"),
-                })
-        except Exception as exc:
-            logger.warning(f"review: emit parse failed: {exc}")
-
-    return payload
 
 
 @router.get("/jobs/{job_id}/classification")

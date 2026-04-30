@@ -333,7 +333,7 @@ async def test_storeys_endpoint_empty_before_emit(client):
     # cleanly with empty list, not 404.
     r = await client.get(f"/api/jobs/{job_id}/storeys")
     assert r.status_code == 200
-    assert r.json()["storeys"] == [] or isinstance(r.json()["storeys"], list)
+    assert r.json()["storeys"] == []
 
 
 @fixture_required

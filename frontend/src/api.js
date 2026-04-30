@@ -1,5 +1,11 @@
 // Thin client over the v5.3 FastAPI surface (PLAN.md §2).
 
+async function getJson(url, label) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${label} fetch failed: ${r.status}`);
+  return r.json();
+}
+
 export async function uploadFiles(files) {
   const form = new FormData();
   files.forEach((f) => form.append('files', f, f.name));
@@ -11,35 +17,11 @@ export async function uploadFiles(files) {
   return r.json();
 }
 
-export async function fetchJob(jobId) {
-  const r = await fetch(`/api/jobs/${jobId}`);
-  if (!r.ok) throw new Error(`Job fetch failed: ${r.status}`);
-  return r.json();
-}
-
-export async function fetchManifest(jobId) {
-  const r = await fetch(`/api/jobs/${jobId}/manifest`);
-  if (!r.ok) throw new Error(`Manifest fetch failed: ${r.status}`);
-  return r.json();
-}
-
-export async function fetchClassification(jobId) {
-  const r = await fetch(`/api/jobs/${jobId}/classification`);
-  if (!r.ok) throw new Error(`Classification fetch failed: ${r.status}`);
-  return r.json();
-}
-
-export async function fetchReview(jobId) {
-  const r = await fetch(`/api/jobs/${jobId}/review`);
-  if (!r.ok) throw new Error(`Review fetch failed: ${r.status}`);
-  return r.json();
-}
-
-export async function fetchStoreys(jobId) {
-  const r = await fetch(`/api/jobs/${jobId}/storeys`);
-  if (!r.ok) throw new Error(`Storeys fetch failed: ${r.status}`);
-  return r.json();
-}
+export const fetchJob            = (jobId) => getJson(`/api/jobs/${jobId}`,                   'Job');
+export const fetchManifest       = (jobId) => getJson(`/api/jobs/${jobId}/manifest`,          'Manifest');
+export const fetchClassification = (jobId) => getJson(`/api/jobs/${jobId}/classification`,    'Classification');
+export const fetchReview         = (jobId) => getJson(`/api/jobs/${jobId}/review`,            'Review');
+export const fetchStoreys        = (jobId) => getJson(`/api/jobs/${jobId}/storeys`,           'Storeys');
 
 export function gltfUrl(jobId, storeyId) {
   return `/api/jobs/${jobId}/gltf/${encodeURIComponent(storeyId)}`;

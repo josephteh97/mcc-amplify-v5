@@ -1,5 +1,7 @@
 import React from 'react';
 
+import { basename } from '../util.js';
+
 const CLASS_ORDER = [
   'STRUCT_PLAN_OVERALL',
   'STRUCT_PLAN_ENLARGED',
@@ -17,10 +19,6 @@ const TIER_ORDER = [
   'unresolved',
   'manual',
 ];
-
-function basename(path) {
-  return path.split('/').pop();
-}
 
 function ClassPill({ name, count }) {
   return (
