@@ -248,18 +248,28 @@ shape-aware label associator (for each column bbox):
   L/T 4-number:     flag + skip (deferred)
   pair type-code ↔ dim within PAIR_PROXIMITY_MM = 50
 
-  shape from what matched (not from bbox alone):
+  column type from text pattern (NOT from bbox shape — YOLO is single-class):
     \d+x\d+ equal       → square(s_mm)
-    \d+x\d+ unequal     → rectangular(dim_x, dim_y)
-                          resolve order via bbox aspect:
-                          larger annotation dim → longer bbox axis
-    diameter            → round(d_mm)
+    \d+x\d+ unequal     → rectangular(dim_x_mm, dim_y_mm)  ← only this needs orientation work
+    diameter (Ø / D)    → round(d_mm)
+    H-prefix label      → steel (treated as rectangular for v5.3 geometry;
+                                  family-resolver in Stage 5A picks the steel family)
+
+  rectangular orientation — per-element X×Y vs swap (PROBE_FINDINGS.md §3A-2 cont):
+    yolo_bbox = (dx_pt, dy_pt)
+    annotation = (a_mm, b_mm), a ≠ b
+    Try X×Y:  |dx/dy − a/b| / max(dx/dy, a/b) ≤ ASPECT_TOL → dim_along_x_mm = a, dim_along_y_mm = b
+    Try swap: |dx/dy − b/a| / max(dx/dy, b/a) ≤ ASPECT_TOL → dim_along_x_mm = b, dim_along_y_mm = a
+    Neither fits: signals.orientation_ambiguous = True; defer to LLM checker
+                  ("looking at the rendered page, is this column's longer axis horizontal
+                    or vertical?"). NEVER coerce — wrong dimension on a structural column
+                  is an unacceptable failure mode (§11 strict-mode).
 
   bbox sanity by shape:
     round       — bbox aspect ∈ [ROUND_ASPECT_LO, ROUND_ASPECT_HI] = [0.85, 1.15]
     square      — bbox aspect ≈ 1.0 within ASPECT_TOL
-    rectangular — bbox aspect agrees with annotation aspect within ASPECT_TOL = 0.15
-    flag any disagreement; do not coerce
+    rectangular — at least one of {X×Y, swap} agrees with bbox aspect within ASPECT_TOL = 0.15;
+                  if neither, defer to LLM checker. Do not coerce.
 
   unlabeled column → emit label=None, shape=unknown, dims=None, flag for review
 
@@ -599,7 +609,7 @@ RL_RE             = r"[+\-]?\d+(?:\.\d+)?\s*(?:mm|m)?"
 4. **Extractor 3A-1 STRUCT_PLAN_OVERALL** — grid + canonical positions (renovation of v4's grid pipeline).
 5. **Extractor 3A-2 STRUCT_PLAN_ENLARGED** — shape-aware label associator (the v4 gap-fill).
 6. **Extractor 3B ELEVATION** — RL only.
-7. **Extractor 3C SECTION** — slab thickness + beam depth.
+7. **Extractor 3C SECTION** — slab thickness + beam depth. **Deferred for v5.3** (see `docs/PROBE_FINDINGS.md` §3C): the reference fixture's architectural sections carry no machine-readable slab/beam annotations. The extractor parses `section_id` from the filename and emits empty joints; Stage 5B falls back to `meta.yaml.slabs.default_thickness_mm` and flags every slab for the review queue. The immediate v5 priority is column W×H orientation in §3A-2.
 8. **Reconciler** — cross-link OVERALL ↔ ENLARGED, strict merge, conflict policy.
 9. **Type Resolver + Family Manager (5A)** — must land before any Revit emission.
 10. **Geometry Emitter (5B)** — pyRevit script consuming Stage 5A plan; RVT (Revit 2023) + GLTF; strict-mode gates; fail-loud on missing inputs.

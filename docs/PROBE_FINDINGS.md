@@ -127,6 +127,101 @@ RL_FFL_RE        = r"FFL\s*([+\-])\s*(\d+(?:\.\d+)?)"   # capture sign + meters
 
 ---
 
+## §3A-2 (continued) — Column W×H orientation convention
+
+**Scope clarified**: of the four column types (square / rectangular / round /
+steel), only **rectangular** has the W-vs-L orientation problem. Square has
+aspect 1, round has a single diameter, and steel (`H-` prefix on the type
+code) is geometrically rectangular and resolved the same way. The 469
+asymmetric annotations counted below ARE the rectangular cohort.
+
+**Toolchain reminder**: YOLO `column-detect.pt @1280` is **single-class** —
+it locates columns but does not classify shape. Shape is determined from
+the OCR'd / vector-text annotation pattern (`NxN` / `N≠M` / `ØN`); YOLO
+just provides the confident bbox we pair the text against.
+
+
+
+The §3A-2 strategy says: for an unequal `W×H` annotation, the larger
+annotation dim should map to the longer bbox axis. But the convention
+direction (X×Y geometric vs L×S size-order) is consultant-specific.
+The orientation probe (`probe_column_orientation.py`) tested both hypotheses.
+
+**Setup:** for each asymmetric `W×H` text annotation on the 56 enlarged
+plans, find the nearest small filled rect path on the same page (column
+candidates: 8–100 pt filled rectangles, neither dim < 4 pt) within 3×
+the text-bbox diagonal. Compute aspect agreement under each hypothesis
+within `ASPECT_TOL = 0.15`.
+
+| Metric | Value |
+|---|---|
+| Asymmetric annotations | 469 |
+| `first > second` | 385 |
+| `first < second` | **84** |
+| Paired with a column-candidate path | 354 (75%) |
+| X×Y consistent | 170 (48.0%) |
+| L×S consistent | 182 (51.4%) |
+| Both consistent | 170 (48.0%) |
+| Only X×Y consistent | 0 |
+| Only L×S consistent | 12 (3.4%) |
+| Neither consistent | 172 (48.6%) |
+
+**Conclusions:**
+
+1. **The convention is NOT pure "longer × shorter".** 84 annotations
+   (18% of all asymmetric) are written `first < second`. A strict L×S
+   convention would have these all be `first > second`. The presence of
+   `390x800`, `1200x2400`, `1200x2000` proves the convention is at least
+   sometimes geometric (X×Y).
+
+2. **Proximity-only pairing is unreliable.** 48.6% of the 354 attempted
+   pairs disagree with both hypotheses — the fixture's enlarged plans are
+   dense enough that a 3× text-diagonal radius often captures a wall stub
+   or beam fragment instead of the actual column. We cannot derive the
+   convention fixture-wide from this signal alone.
+
+3. **The 0 cases of "X×Y only" + 12 cases of "L×S only" tell us very
+   little** because almost every successful pair where the bbox itself
+   was correctly identified has both hypotheses agreeing (170 "both
+   consistent"). This is geometrically expected: when the paired path's
+   long axis happens to align with the annotation's larger number, the
+   two hypotheses converge.
+
+**Implications for Step 5 (label associator):**
+
+- Proximity is not a strong-enough signal on its own. Step 5 must use
+  **YOLO column detection** (the v4 `column-detect.pt @1280` model)
+  to obtain confident column bboxes, then pair text labels to YOLO
+  bboxes (not to vector rect paths in isolation).
+- Once we have a confident `(label, dim, bbox)` triple, the X×Y vs L×S
+  question is a per-element check, not a fixture-wide conclusion.
+  Algorithm:
+  - If `bbox` aspect agrees with `(W, H)` interpretation within `ASPECT_TOL` → accept X×Y, record `dim_along_x_mm = W`, `dim_along_y_mm = H`.
+  - Else if `bbox` aspect agrees with `(H, W)` (swapped) → accept swapped.
+  - Else flag for the LLM checker (`signals.orientation_ambiguous = True`) and let the VLM look at the rendered page to resolve.
+- The 84 `first < second` cases prove geometric (X×Y) is at least the
+  primary convention for this consultant. Step 5 should default to X×Y
+  and only swap when bbox geometry contradicts.
+- **No fixture-wide convention flag in `meta.yaml`** — convention is
+  decided per element, with the LLM checker as final arbiter for
+  ambiguous cases. This matches PLAN.md §11 strict-mode: never coerce.
+
+**Slab thickness (§3C) deferred per direction**
+
+Vector-text slab/beam depth extraction returned 0 hits on this fixture
+(see §3C above). For v5.3 we **defer Stage 3C slab/beam parsing** and
+have the section extractor:
+1. Capture `section_id` from the filename (`TD-A-120-0101_SECTION A_B.pdf` → `A-B`)
+2. Emit an empty joints list
+3. Stage 5B reads `meta.yaml.slabs.default_thickness_mm` and flags every
+   slab with `source: meta.yaml.fallback` for the review queue
+
+The "find column dimensions correctly, including W×H orientation" task
+takes priority — it's the immediate v4 gap the v5 rewrite is meant to
+close.
+
+---
+
 ## Cross-cutting observations
 
 1. **Naming-convention divergence between disciplines**: Structural sheets use short codes (`B1`, `L1`, `C2`); architectural sheets (which provide elevation/section input) use full English names (`BASEMENT 1`, `OFFICE`). Either the regex tier widens its vocabulary, or `meta.yaml` carries an alias map. Recommend `meta.yaml.aliases.levels` for explicit project-level normalisation.
@@ -144,6 +239,6 @@ RL_FFL_RE        = r"FFL\s*([+\-])\s*(\d+(?:\.\d+)?)"   # capture sign + meters
 | Step | What changes vs the original PLAN.md regex |
 |---|---|
 | 4 (overall) | Restrict grid-bubble candidates to a 10%-edge perimeter band; validate by row/column alignment before accepting |
-| 5 (enlarged) | Widen `TYPE_CODE_RE` → `^(H-)?[A-Z]{1,3}\d+[A-Z]?$`; investigate the 33 DIA loose-only hits; rotation-aware proximity |
+| 5 (enlarged) | Widen `TYPE_CODE_RE` → `^(H-)?[A-Z]{1,3}\d+[A-Z]?$`; investigate the 33 DIA loose-only hits; rotation-aware proximity; **YOLO column bbox is required for reliable label pairing**; per-element X×Y vs L×S orientation check with LLM checker fallback when both hypotheses disagree with bbox geometry |
 | 6 (elevation) | Add `LEVEL_NAME_RE_V2` and `RL_FFL_RE`; convert meters→mm; project-level alias map in `meta.yaml.aliases.levels` |
-| 7 (section) | Filename-driven `section_id`; default to `meta.yaml.slabs.default_thickness_mm` and flag for review when text-based slab/beam depth extraction returns empty |
+| 7 (section) | **Deferred for v5.3**: parse `section_id` from filename; emit empty joints; Stage 5B falls back to `meta.yaml.slabs.default_thickness_mm` with review-queue flag. Text-based slab/beam depth not extractable on this fixture |
