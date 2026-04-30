@@ -29,8 +29,9 @@ from backend.classify.rules import FilenameRule
 from backend.classify.types import DrawingClass
 from backend.core.meta_yaml import MetaYaml
 from backend.core.workspace import Workspace
-from backend.extract.plan_enlarged import EnlargedExtractResult, extract_enlarged
-from backend.extract.plan_overall  import OverallExtractResult,  extract_overall
+from backend.extract.elevation     import ElevationExtractResult, extract_elevation
+from backend.extract.plan_enlarged import EnlargedExtractResult,  extract_enlarged
+from backend.extract.plan_overall  import OverallExtractResult,   extract_overall
 from backend.ingest.ingest import IngestedFile, ingest, walk_uploads
 
 # Progress callback signature: (event_type, payload) -> None.
@@ -44,8 +45,9 @@ class JobResult:
     workspace:       Workspace
     manifest:        list[IngestedFile]
     classification:  list[ClassifiedItem] | None         = None
-    plan_overall:    list[OverallExtractResult] | None   = None
-    plan_enlarged:   list[EnlargedExtractResult] | None  = None
+    plan_overall:    list[OverallExtractResult] | None    = None
+    plan_enlarged:   list[EnlargedExtractResult] | None   = None
+    elevation:       list[ElevationExtractResult] | None  = None
 
 
 def _emit(progress: ProgressFn, event_type: str, payload: dict) -> None:
@@ -103,12 +105,15 @@ def run(
     enlarged_results = _run_plan_enlarged(workspace, classified, progress,
                                           run_yolo=run_yolo_columns)
 
+    elevation_results = _run_elevation(workspace, classified, progress)
+
     return JobResult(
         workspace      = workspace,
         manifest       = manifest,
         classification = classified,
         plan_overall   = overall_results,
         plan_enlarged  = enlarged_results,
+        elevation      = elevation_results,
     )
 
 
@@ -165,6 +170,90 @@ def _run_plan_overall(
         f"with_grid={summary['with_grid']} rejected={summary['rejected']}",
     )
     return results
+
+
+def _run_elevation(
+    workspace:  Workspace,
+    classified: list[ClassifiedItem],
+    progress:   ProgressFn,
+) -> list[ElevationExtractResult]:
+    """Stage 3B — RL-only elevation extraction (PLAN.md §3B).
+
+    Per-PDF, not per-page: extract_elevation iterates every page of one
+    elevation PDF internally. We dedupe on pdf_path so a multi-page
+    elevation set runs once per file.
+    """
+    seen: set[Path] = set()
+    pdfs: list[Path] = []
+    for c in classified:
+        if c.result.drawing_class != DrawingClass.ELEVATION:
+            continue
+        if c.pdf_path in seen:
+            continue
+        seen.add(c.pdf_path)
+        pdfs.append(c.pdf_path)
+
+    _emit(progress, "stage_started", {"stage": "extract_elevation", "count": len(pdfs)})
+    logger.info(f"Stage 3B — extract_elevation: {len(pdfs)} PDF(s)")
+
+    out_dir = workspace.extracted / "elevation"
+    results: list[ElevationExtractResult] = []
+    for pdf in pdfs:
+        try:
+            r = extract_elevation(pdf, out_dir)
+        except Exception as exc:                       # noqa: BLE001
+            logger.exception(f"extract_elevation failed on {pdf.name}: {exc}")
+            results.append(ElevationExtractResult(
+                pdf_path     = pdf,
+                pdf_stem     = pdf.stem,
+                page_count   = 0,
+                level_count  = 0,
+                payload_path = None,
+                error        = f"{type(exc).__name__}: {exc}",
+                flags        = ["extractor_crashed"],
+            ))
+            continue
+        results.append(r)
+        logger.info(f"  {r.pdf_stem}: levels={r.level_count}  flags={len(r.flags)}")
+
+    summary = {
+        "total":         len(results),
+        "total_levels":  sum(r.level_count for r in results),
+        "with_flags":    sum(1 for r in results if r.flags),
+    }
+    _write_elevation_report(workspace, results, summary)
+    _emit(progress, "stage_completed", {"stage": "extract_elevation", **summary})
+    logger.info(
+        f"Stage 3B done — {summary['total']} PDF(s) | "
+        f"levels={summary['total_levels']} with_flags={summary['with_flags']}",
+    )
+    return results
+
+
+def _write_elevation_report(
+    workspace: Workspace,
+    results:   list[ElevationExtractResult],
+    summary:   dict,
+) -> None:
+    payload = {
+        "summary": summary,
+        "items": [
+            {
+                "pdf":          str(r.pdf_path),
+                "pdf_stem":     r.pdf_stem,
+                "page_count":   r.page_count,
+                "level_count":  r.level_count,
+                "payload_path": None if r.payload_path is None else str(r.payload_path),
+                "error":        r.error,
+                "flags":        r.flags,
+            }
+            for r in results
+        ],
+    }
+    out = workspace.output / "_extract_elevation_report.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w") as f:
+        json.dump(payload, f, indent=2)
 
 
 def _run_plan_enlarged(
