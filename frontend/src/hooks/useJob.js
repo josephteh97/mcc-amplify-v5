@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { uploadFiles, fetchManifest, fetchClassification, openProgressSocket } from '../api.js';
+import { uploadFiles, fetchManifest, fetchClassification, fetchReview, openProgressSocket } from '../api.js';
 
 // Job lifecycle states match the backend's JobRecord.status field, plus a
 // frontend-only 'idle' (no job yet) and 'uploading' (POST in flight).
@@ -12,6 +12,7 @@ export function useJob() {
   const [events,         setEvents]         = useState([]);
   const [manifest,       setManifest]       = useState(null);
   const [classification, setClassification] = useState(null);
+  const [review,         setReview]         = useState(null);
   const [error,          setError]          = useState(null);
   const wsRef = useRef(null);
 
@@ -30,6 +31,7 @@ export function useJob() {
     setEvents([]);
     setManifest(null);
     setClassification(null);
+    setReview(null);
     setError(null);
   }, []);
 
@@ -38,6 +40,7 @@ export function useJob() {
     setEvents([]);
     setManifest(null);
     setClassification(null);
+    setReview(null);
     setError(null);
 
     try {
@@ -69,6 +72,14 @@ export function useJob() {
             } catch (e) {
               setError(e.message);
             }
+            // Review queue (PLAN.md §11) — best-effort; missing artefacts
+            // come back as empty sections, so we don't fail the job on it.
+            try {
+              const rv = await fetchReview(job_id);
+              setReview(rv);
+            } catch (e) {
+              console.warn('review fetch failed:', e);
+            }
             closeSocket();
           } else if (event.type === 'error') {
             setStatus('failed');
@@ -92,7 +103,7 @@ export function useJob() {
 
   return {
     files, setFiles, jobId, status, events,
-    manifest, classification, error,
+    manifest, classification, review, error,
     upload, reset,
   };
 }

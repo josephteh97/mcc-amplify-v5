@@ -260,3 +260,131 @@ button.secondary:hover { border-color: var(--muted); }
   color: var(--muted);
   font-size: 0.78rem;
 }
+
+/* Review queue (PLAN.md §11) ─────────────────────────────────────────────── */
+.review-queue { margin-top: 24px; }
+.review-queue h2 {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px;
+}
+.review-total {
+  font-size: 0.78rem; padding: 2px 8px; border-radius: 999px;
+  font-weight: 500;
+}
+.review-total-clean { color: var(--ok);  background: rgba(63, 185, 80, 0.12); }
+.review-total-dirty { color: var(--warn); background: rgba(210, 153, 34, 0.14); }
+
+.review-section {
+  background: var(--panel);
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.review-section-empty  { opacity: 0.65; }
+.review-section-active { }
+
+.review-section-header {
+  width: 100%;
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.92rem;
+}
+.review-section-header:hover { background: rgba(255,255,255,0.02); }
+.review-section-toggle  { color: var(--muted); width: 12px; }
+.review-section-title   { flex: 1; }
+.review-section-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.78rem;
+  padding: 1px 8px; border-radius: 999px;
+}
+.count-zero    { color: var(--muted); background: rgba(139, 148, 158, 0.12); }
+.count-nonzero { color: var(--warn);  background: rgba(210, 153, 34, 0.16); }
+
+.review-section-body {
+  padding: 4px 12px 12px;
+  border-top: 1px solid #21262d;
+}
+.review-empty {
+  color: var(--muted);
+  font-size: 0.82rem;
+  padding: 8px 0;
+}
+.review-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.review-list li {
+  padding: 8px 0;
+  border-bottom: 1px solid #1c2026;
+  display: grid;
+  grid-template-columns: minmax(120px, 220px) auto 1fr;
+  gap: 12px;
+  align-items: baseline;
+  font-size: 0.86rem;
+}
+.review-list li:last-child { border-bottom: none; }
+.review-list li.review-row-hard { background: rgba(248, 81, 73, 0.05); }
+.review-name   { color: var(--fg); font-weight: 500; }
+.review-meta   { color: var(--muted); font-variant-numeric: tabular-nums; }
+.review-detail { color: var(--muted); font-size: 0.82rem; }
+.review-chip {
+  display: inline-block;
+  padding: 1px 6px; margin: 0 4px 4px 0;
+  border-radius: 4px;
+  background: rgba(47, 129, 247, 0.10);
+  color: var(--fg);
+  font-size: 0.78rem;
+}
+.review-chip-meta { color: var(--muted); }
+.review-chip-warn { background: rgba(210, 153, 34, 0.15); color: var(--warn); }
+.review-chip-fail { background: rgba(248, 81, 73, 0.12); color: var(--err); }
+
+/* 3D viewer (PLAN.md §9 GLTF preview) ───────────────────────────────────── */
+.viewer-panel { margin-top: 24px; }
+.viewer-panel h2 {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+}
+.viewer-storey-select {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 0.86rem;
+  font-family: inherit;
+}
+.viewer-storey-select:focus { outline: 1px solid var(--accent); }
+.viewer-canvas {
+  width: 100%;
+  height: 520px;
+  background: var(--panel);
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.viewer-empty {
+  background: var(--panel);
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 24px;
+  text-align: center;
+  font-size: 0.86rem;
+}
+.viewer-empty.muted { color: var(--muted); }
+.viewer-empty.error { color: var(--err); }
+.viewer-error {
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px;
+  color: var(--err);
+  background: var(--panel);
+}
+.viewer-error .muted { color: var(--muted); font-size: 0.82rem; }

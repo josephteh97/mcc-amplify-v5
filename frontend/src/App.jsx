@@ -3,6 +3,8 @@ import { Upload }         from './components/Upload.jsx';
 import { Progress }       from './components/Progress.jsx';
 import { Classification } from './components/Classification.jsx';
 import { Manifest }       from './components/Manifest.jsx';
+import { ReviewQueue }    from './components/ReviewQueue.jsx';
+import { Viewer }         from './components/Viewer.jsx';
 import { useJob }         from './hooks/useJob.js';
 
 export default function App() {
@@ -32,6 +34,8 @@ export default function App() {
           {job.error          && <div className="error">{job.error}</div>}
           {job.classification && <Classification classification={job.classification} />}
           {job.manifest       && <Manifest manifest={job.manifest} />}
+          {job.review         && <ReviewQueue review={job.review} />}
+          {job.status === 'completed' && <Viewer jobId={job.jobId} />}
           <div className="row">
             <button className="secondary" onClick={job.reset}>New job</button>
           </div>

@@ -29,6 +29,22 @@ export async function fetchClassification(jobId) {
   return r.json();
 }
 
+export async function fetchReview(jobId) {
+  const r = await fetch(`/api/jobs/${jobId}/review`);
+  if (!r.ok) throw new Error(`Review fetch failed: ${r.status}`);
+  return r.json();
+}
+
+export async function fetchStoreys(jobId) {
+  const r = await fetch(`/api/jobs/${jobId}/storeys`);
+  if (!r.ok) throw new Error(`Storeys fetch failed: ${r.status}`);
+  return r.json();
+}
+
+export function gltfUrl(jobId, storeyId) {
+  return `/api/jobs/${jobId}/gltf/${encodeURIComponent(storeyId)}`;
+}
+
 export function openProgressSocket(jobId, onEvent, onError) {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const url = `${proto}://${window.location.host}/api/ws/${jobId}`;
