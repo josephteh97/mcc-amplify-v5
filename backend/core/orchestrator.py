@@ -1,24 +1,32 @@
 """Stage runner per PLAN.md §2.
 
 Builds out one stage at a time as each lands per §14:
-  Step 1a (current) — ingest only
-  Step 2            — + classify
-  Step 3..7         — + extract/{plan_overall, plan_enlarged, elevation, section}
-  Step 8            — + reconcile
-  Step 9            — + resolve (5A)
-  Step 10           — + emit (5B) — RVT + GLTF
+  Step 1a — ingest only
+  Step 1b — same, but driven by API + emitting events through a callback
+  Step 2  — + classify
+  Step 3..7 — + extract/{plan_overall, plan_enlarged, elevation, section}
+  Step 8  — + reconcile
+  Step 9  — + resolve (5A)
+  Step 10 — + emit (5B) — RVT + GLTF
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from loguru import logger
 
 from backend.core.meta_yaml import MetaYaml
 from backend.core.workspace import Workspace
 from backend.ingest.ingest import IngestedFile, ingest, walk_uploads
+
+# Progress callback signature: (event_type, payload) -> None.
+# Synchronous and side-effect-only; the API layer adapts it onto an async
+# WebSocket broadcaster. None is acceptable for headless / CLI runs.
+ProgressFn = Callable[[str, dict], None] | None
 
 
 @dataclass
@@ -27,21 +35,58 @@ class JobResult:
     manifest:  list[IngestedFile]
 
 
-def run(upload_root: Path, workspace_root: Path, meta_path: Path | None = None) -> JobResult:
-    """One job = one upload = one output (§2). Rerun = full reprocess."""
-    ws = Workspace.fresh(workspace_root)
+def _emit(progress: ProgressFn, event_type: str, payload: dict) -> None:
+    if progress is not None:
+        progress(event_type, payload)
+
+
+def run(
+    workspace:  Workspace,
+    walk_root:  Path | None      = None,
+    meta_path:  Path | None      = None,
+    progress:   ProgressFn       = None,
+) -> JobResult:
+    """One job = one upload = one output (§2). Rerun = full reprocess.
+
+    walk_root defaults to workspace.uploads when omitted; CLI tooling can pass
+    a fixture path directly to avoid staging hundreds of PDFs into the
+    workspace just to walk them.
+    """
+    source = walk_root if walk_root is not None else workspace.uploads
 
     if meta_path is not None and meta_path.exists():
         meta = MetaYaml.load(meta_path)
-        meta.save(ws.meta_path)
+        meta.save(workspace.meta_path)
         logger.info(f"Loaded meta.yaml for project {meta.project.id!r}")
-    else:
-        logger.info("No meta.yaml provided; using built-in defaults")
 
-    logger.info(f"Stage 1 — ingest: {upload_root}")
-    pdfs = walk_uploads(upload_root)
+    _emit(progress, "stage_started", {"stage": "ingest", "source": str(source)})
+    logger.info(f"Stage 1 — ingest: {source}")
+    pdfs = walk_uploads(source)
     manifest = ingest(pdfs)
     page_total = sum(f.n_pages for f in manifest)
-    logger.info(f"Stage 1 done — {len(manifest)} PDF(s), {page_total} page(s)")
+    summary = {"file_count": len(manifest), "page_count": page_total}
+    logger.info(f"Stage 1 done — {summary['file_count']} PDF(s), {summary['page_count']} page(s)")
+    _emit(progress, "stage_completed", {"stage": "ingest", **summary})
 
-    return JobResult(workspace=ws, manifest=manifest)
+    _persist_manifest(workspace, manifest)
+
+    return JobResult(workspace=workspace, manifest=manifest)
+
+
+def _persist_manifest(workspace: Workspace, manifest: list[IngestedFile]) -> None:
+    """Write the ingest manifest into the workspace so the API can serve it."""
+    payload = {
+        "file_count": len(manifest),
+        "page_count": sum(f.n_pages for f in manifest),
+        "files": [
+            {
+                "pdf":         str(f.pdf_path),
+                "n_pages":     f.n_pages,
+                "page_hashes": list(f.page_hashes),
+            }
+            for f in manifest
+        ],
+    }
+    out = workspace.output / "manifest.json"
+    with open(out, "w") as f:
+        json.dump(payload, f, indent=2)

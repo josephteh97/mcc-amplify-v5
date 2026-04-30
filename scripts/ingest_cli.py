@@ -19,26 +19,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backend.core.orchestrator import run  # noqa: E402
+from backend.core.workspace import Workspace  # noqa: E402
 
 
 def main(
-    upload_root: str   = "tests/fixtures/sample_uploaded_documents",
+    upload_root:    str = "tests/fixtures/sample_uploaded_documents",
     workspace_root: str = "data/jobs/_step1a",
 ) -> None:
-    result = run(Path(upload_root), Path(workspace_root))
-    payload = {
-        "workspace":  str(result.workspace.root),
-        "file_count": len(result.manifest),
-        "page_count": sum(f.n_pages for f in result.manifest),
-        "files": [
-            {
-                "pdf":         str(f.pdf_path),
-                "n_pages":     f.n_pages,
-                "page_hashes": list(f.page_hashes),
-            }
-            for f in result.manifest
-        ],
-    }
+    ws = Workspace.fresh(Path(workspace_root))
+    result = run(workspace=ws, walk_root=Path(upload_root))
+
+    manifest_path = ws.output / "manifest.json"
+    with open(manifest_path) as f:
+        payload = json.load(f)
+    payload["workspace"] = str(result.workspace.root)
     print(json.dumps(payload, indent=2))
 
 
