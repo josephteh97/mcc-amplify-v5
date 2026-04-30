@@ -32,6 +32,7 @@ from backend.core.workspace import Workspace
 from backend.extract.elevation     import ElevationExtractResult, extract_elevation
 from backend.extract.plan_enlarged import EnlargedExtractResult,  extract_enlarged
 from backend.extract.plan_overall  import OverallExtractResult,   extract_overall
+from backend.extract.section       import SectionExtractResult,   extract_section
 from backend.ingest.ingest import IngestedFile, ingest, walk_uploads
 
 # Progress callback signature: (event_type, payload) -> None.
@@ -48,6 +49,7 @@ class JobResult:
     plan_overall:    list[OverallExtractResult] | None    = None
     plan_enlarged:   list[EnlargedExtractResult] | None   = None
     elevation:       list[ElevationExtractResult] | None  = None
+    section:         list[SectionExtractResult] | None    = None
 
 
 def _emit(progress: ProgressFn, event_type: str, payload: dict) -> None:
@@ -107,6 +109,8 @@ def run(
 
     elevation_results = _run_elevation(workspace, classified, progress)
 
+    section_results = _run_section(workspace, classified, progress)
+
     return JobResult(
         workspace      = workspace,
         manifest       = manifest,
@@ -114,6 +118,7 @@ def run(
         plan_overall   = overall_results,
         plan_enlarged  = enlarged_results,
         elevation      = elevation_results,
+        section        = section_results,
     )
 
 
@@ -170,6 +175,94 @@ def _run_plan_overall(
         f"with_grid={summary['with_grid']} rejected={summary['rejected']}",
     )
     return results
+
+
+def _run_section(
+    workspace:  Workspace,
+    classified: list[ClassifiedItem],
+    progress:   ProgressFn,
+) -> list[SectionExtractResult]:
+    """Stage 3C — deferred-stub section extractor (PLAN.md §3C).
+
+    Per-PDF, dedupe on pdf_path. Always emits a stub payload —
+    Stage 5B falls back to ``meta.yaml.slabs.default_thickness_mm``
+    per PLAN §17.
+    """
+    seen: set[Path] = set()
+    pdfs: list[Path] = []
+    for c in classified:
+        if c.result.drawing_class != DrawingClass.SECTION:
+            continue
+        if c.pdf_path in seen:
+            continue
+        seen.add(c.pdf_path)
+        pdfs.append(c.pdf_path)
+
+    _emit(progress, "stage_started", {"stage": "extract_section", "count": len(pdfs)})
+    logger.info(f"Stage 3C — extract_section: {len(pdfs)} PDF(s)")
+
+    out_dir = workspace.extracted / "section"
+    results: list[SectionExtractResult] = []
+    for pdf in pdfs:
+        try:
+            r = extract_section(pdf, out_dir)
+        except Exception as exc:                       # noqa: BLE001
+            logger.exception(f"extract_section failed on {pdf.name}: {exc}")
+            results.append(SectionExtractResult(
+                pdf_path       = pdf,
+                pdf_stem       = pdf.stem,
+                page_count     = 0,
+                section_ids    = [],
+                thickness_hits = 0,
+                payload_path   = None,
+                error          = f"{type(exc).__name__}: {exc}",
+                flags          = ["extractor_crashed"],
+            ))
+            continue
+        results.append(r)
+        logger.info(
+            f"  {r.pdf_stem}: section_ids={r.section_ids} thickness_hits={r.thickness_hits}",
+        )
+
+    summary = {
+        "total":              len(results),
+        "total_section_ids":  sum(len(r.section_ids) for r in results),
+        "total_thickness_hits": sum(r.thickness_hits for r in results),
+    }
+    _write_section_report(workspace, results, summary)
+    _emit(progress, "stage_completed", {"stage": "extract_section", **summary})
+    logger.info(
+        f"Stage 3C done — {summary['total']} PDF(s) | "
+        f"section_ids={summary['total_section_ids']} thickness_hits={summary['total_thickness_hits']}",
+    )
+    return results
+
+
+def _write_section_report(
+    workspace: Workspace,
+    results:   list[SectionExtractResult],
+    summary:   dict,
+) -> None:
+    payload = {
+        "summary": summary,
+        "items": [
+            {
+                "pdf":             str(r.pdf_path),
+                "pdf_stem":        r.pdf_stem,
+                "page_count":      r.page_count,
+                "section_ids":     r.section_ids,
+                "thickness_hits":  r.thickness_hits,
+                "payload_path":    None if r.payload_path is None else str(r.payload_path),
+                "error":           r.error,
+                "flags":           r.flags,
+            }
+            for r in results
+        ],
+    }
+    out = workspace.output / "_extract_section_report.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w") as f:
+        json.dump(payload, f, indent=2)
 
 
 def _run_elevation(
