@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { uploadFiles, fetchManifest, openProgressSocket } from '../api.js';
+import { uploadFiles, fetchManifest, fetchClassification, openProgressSocket } from '../api.js';
 
 // Job lifecycle states match the backend's JobRecord.status field, plus a
 // frontend-only 'idle' (no job yet) and 'uploading' (POST in flight).
@@ -9,9 +9,10 @@ export function useJob() {
   const [files,    setFiles]    = useState([]);
   const [jobId,    setJobId]    = useState(null);
   const [status,   setStatus]   = useState(IDLE);
-  const [events,   setEvents]   = useState([]);
-  const [manifest, setManifest] = useState(null);
-  const [error,    setError]    = useState(null);
+  const [events,         setEvents]         = useState([]);
+  const [manifest,       setManifest]       = useState(null);
+  const [classification, setClassification] = useState(null);
+  const [error,          setError]          = useState(null);
   const wsRef = useRef(null);
 
   const closeSocket = () => {
@@ -28,6 +29,7 @@ export function useJob() {
     setStatus(IDLE);
     setEvents([]);
     setManifest(null);
+    setClassification(null);
     setError(null);
   }, []);
 
@@ -35,6 +37,7 @@ export function useJob() {
     setStatus('uploading');
     setEvents([]);
     setManifest(null);
+    setClassification(null);
     setError(null);
 
     try {
@@ -46,6 +49,18 @@ export function useJob() {
         job_id,
         async (event) => {
           setEvents((prev) => [...prev, event]);
+
+          // The classifier writes its report at end of Stage 2 — fetch it
+          // immediately so the UI shows the breakdown while later stages run.
+          if (event.type === 'stage_completed' && event.stage === 'classify') {
+            try {
+              const c = await fetchClassification(job_id);
+              setClassification(c);
+            } catch (e) {
+              console.warn('classification fetch failed:', e);
+            }
+          }
+
           if (event.type === 'job_completed') {
             setStatus('completed');
             try {
@@ -75,5 +90,9 @@ export function useJob() {
     }
   }, []);
 
-  return { files, setFiles, jobId, status, events, manifest, error, upload, reset };
+  return {
+    files, setFiles, jobId, status, events,
+    manifest, classification, error,
+    upload, reset,
+  };
 }

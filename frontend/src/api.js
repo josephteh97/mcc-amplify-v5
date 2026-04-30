@@ -23,6 +23,12 @@ export async function fetchManifest(jobId) {
   return r.json();
 }
 
+export async function fetchClassification(jobId) {
+  const r = await fetch(`/api/jobs/${jobId}/classification`);
+  if (!r.ok) throw new Error(`Classification fetch failed: ${r.status}`);
+  return r.json();
+}
+
 export function openProgressSocket(jobId, onEvent, onError) {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const url = `${proto}://${window.location.host}/api/ws/${jobId}`;

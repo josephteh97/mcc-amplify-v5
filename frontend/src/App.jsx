@@ -1,8 +1,9 @@
 import React from 'react';
-import { Upload }   from './components/Upload.jsx';
-import { Progress } from './components/Progress.jsx';
-import { Manifest } from './components/Manifest.jsx';
-import { useJob }   from './hooks/useJob.js';
+import { Upload }         from './components/Upload.jsx';
+import { Progress }       from './components/Progress.jsx';
+import { Classification } from './components/Classification.jsx';
+import { Manifest }       from './components/Manifest.jsx';
+import { useJob }         from './hooks/useJob.js';
 
 export default function App() {
   const job = useJob();
@@ -28,8 +29,9 @@ export default function App() {
         <>
           <h2>Job {job.jobId.slice(0, 8)}…</h2>
           <Progress status={job.status} events={job.events} />
-          {job.error    && <div className="error">{job.error}</div>}
-          {job.manifest && <Manifest manifest={job.manifest} />}
+          {job.error          && <div className="error">{job.error}</div>}
+          {job.classification && <Classification classification={job.classification} />}
+          {job.manifest       && <Manifest manifest={job.manifest} />}
           <div className="row">
             <button className="secondary" onClick={job.reset}>New job</button>
           </div>

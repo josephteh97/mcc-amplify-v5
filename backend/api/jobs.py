@@ -31,24 +31,26 @@ JOBS_ROOT = Path(os.getenv("JOBS_ROOT", "data/jobs"))
 
 @dataclass
 class JobRecord:
-    job_id:     str
-    status:     str          = "pending"   # pending | running | completed | failed
-    created_at: float        = field(default_factory=time.time)
-    file_count: int          = 0
-    page_count: int          = 0
-    error:      str | None   = None
-    events:     list[dict]   = field(default_factory=list)
-    result:     dict | None  = None
+    job_id:         str
+    status:         str             = "pending"   # pending | running | completed | failed
+    created_at:     float           = field(default_factory=time.time)
+    workspace_root: Path | None     = None
+    file_count:     int             = 0
+    page_count:     int             = 0
+    error:          str | None      = None
+    events:         list[dict]      = field(default_factory=list)
+    result:         dict | None     = None
 
     def to_status_payload(self) -> dict:
         return {
-            "job_id":     self.job_id,
-            "status":     self.status,
-            "created_at": self.created_at,
-            "file_count": self.file_count,
-            "page_count": self.page_count,
-            "error":      self.error,
-            "result":     self.result,
+            "job_id":         self.job_id,
+            "status":         self.status,
+            "created_at":     self.created_at,
+            "workspace_root": str(self.workspace_root) if self.workspace_root else None,
+            "file_count":     self.file_count,
+            "page_count":     self.page_count,
+            "error":          self.error,
+            "result":         self.result,
         }
 
 

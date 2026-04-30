@@ -36,7 +36,8 @@ async def upload(files: list[UploadFile] = File(...)) -> dict:
         with open(dest, "wb") as out:
             out.write(await f.read())
 
-    job.file_count = len(pdfs)
+    job.file_count     = len(pdfs)
+    job.workspace_root = ws.root
     logger.info(f"Job {job.job_id} created — {len(pdfs)} PDF(s) staged at {ws.uploads}")
 
     asyncio.create_task(run_job(job, ws, broadcaster))
@@ -63,6 +64,26 @@ async def get_manifest(job_id: str):
     if not manifest_path.exists():
         raise HTTPException(500, "Manifest path recorded but file missing on disk")
     return FileResponse(manifest_path, media_type="application/json")
+
+
+@router.get("/jobs/{job_id}/classification")
+async def get_classification(job_id: str):
+    """The Stage 2 classifier report (PLAN.md §5).
+
+    Available from the moment Stage 2 finishes — accessible while the job is
+    still running. Returns 404 only if the job doesn't exist or hasn't reached
+    Stage 2 yet (the classifier writes the report synchronously).
+    """
+    job = job_store.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+
+    if job.workspace_root is None:
+        raise HTTPException(404, "Classification report not available yet")
+    report_path = job.workspace_root / "output" / "_classification_report.json"
+    if not report_path.exists():
+        raise HTTPException(404, "Classification report not available yet")
+    return FileResponse(report_path, media_type="application/json")
 
 
 @router.get("/jobs")

@@ -104,6 +104,7 @@ async def test_upload_runs_full_job_and_serves_manifest(client):
     assert status["status"] == "completed", status
     assert status["file_count"] == 3
     assert status["page_count"] == 3   # fixture sample is single-page per PDF
+    assert status["workspace_root"]    # populated from upload-time onward
 
     r = await client.get(f"/api/jobs/{job_id}/manifest")
     assert r.status_code == 200
@@ -111,6 +112,33 @@ async def test_upload_runs_full_job_and_serves_manifest(client):
     assert manifest["file_count"] == 3
     assert len(manifest["files"]) == 3
     assert all(len(f["page_hashes"]) == f["n_pages"] for f in manifest["files"])
+
+
+@fixture_required
+async def test_classification_endpoint(client):
+    """The classification report becomes available once Stage 2 completes."""
+    pdfs  = _three_fixture_pdfs()
+    files = [("files", (p.name, p.read_bytes(), "application/pdf")) for p in pdfs]
+    r = await client.post("/api/upload", files=files)
+    job_id = r.json()["job_id"]
+
+    await _wait_for_status(client, job_id, "completed")
+    r = await client.get(f"/api/jobs/{job_id}/classification")
+    assert r.status_code == 200
+    report = r.json()
+    assert report["summary"]["total"] == 3
+    assert len(report["items"])       == 3
+    # All three picks are filename-tier-matchable structural PDFs.
+    assert report["summary"]["by_class"].get("STRUCT_PLAN_OVERALL", 0) \
+         + report["summary"]["by_class"].get("STRUCT_PLAN_ENLARGED", 0) == 3
+    assert report["summary"]["by_tier"].get("filename") == 3
+
+
+@fixture_required
+async def test_classification_endpoint_404_before_stage_2(client):
+    """A bogus job has no classification report."""
+    r = await client.get("/api/jobs/does-not-exist/classification")
+    assert r.status_code == 404
 
 
 @fixture_required
