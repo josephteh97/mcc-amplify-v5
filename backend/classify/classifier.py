@@ -14,7 +14,9 @@ from pathlib import Path
 
 from loguru import logger
 
+from backend.classify.cache      import JudgeCache
 from backend.classify.content    import classify_content
+from backend.classify.llm_judge  import DEFAULT_CACHE_PATH, classify_llm
 from backend.classify.rules      import DEFAULT_FILENAME_RULES, FilenameRule, classify_filename
 from backend.classify.titleblock import classify_titleblock
 from backend.classify.types      import (
@@ -42,11 +44,17 @@ class ClassifiedItem:
 
 
 def classify_page(
-    pdf_path: Path,
-    page_index: int,
-    filename_rules: list[FilenameRule] | None = None,
+    pdf_path:       Path,
+    page_index:     int,
+    page_hash:      str | None                    = None,
+    filename_rules: list[FilenameRule] | None     = None,
+    cache:          JudgeCache | None             = None,
 ) -> ClassificationResult:
-    """Run tiers 1 → 3 against one page; first hit wins."""
+    """Run tiers 1 → 4 against one page; first confident hit wins.
+
+    page_hash is optional — required only for the LLM tier's cache key. When
+    omitted (e.g. tests for tiers 1–3), tier 4 is skipped.
+    """
     name = pdf_path.name
 
     r = classify_filename(name, filename_rules)
@@ -61,22 +69,38 @@ def classify_page(
     if r is not None:
         return r
 
+    if page_hash is not None:
+        r = classify_llm(pdf_path, page_index, page_hash, cache=cache)
+        if r is not None:
+            # llm_judge already encodes the primary+checker combination rule:
+            # tier=LLM with confidence ≥ threshold means "accepted",
+            # tier=UNRESOLVED means "needs UI confirmation". Pass either through.
+            return r
+
     return ClassificationResult(
         drawing_class = DrawingClass.UNKNOWN,
         tier          = ClassifierTier.UNRESOLVED,
         confidence    = 0.0,
-        reason        = "no tier 1–3 signal; deferred to LLM/manual (tier 4 not yet implemented)",
+        reason        = "no tier 1–4 signal; deferred to UI prompt (PLAN.md §5.5)",
     )
 
 
 def classify_manifest(
     manifest:       list[IngestedFile],
     filename_rules: list[FilenameRule] | None = None,
+    cache:          JudgeCache | None         = None,
 ) -> list[ClassifiedItem]:
+    cache = cache if cache is not None else JudgeCache(DEFAULT_CACHE_PATH)
     items: list[ClassifiedItem] = []
     for f in manifest:
         for i, page_hash in enumerate(f.page_hashes):
-            result = classify_page(f.pdf_path, i, filename_rules)
+            result = classify_page(
+                pdf_path       = f.pdf_path,
+                page_index     = i,
+                page_hash      = page_hash,
+                filename_rules = filename_rules,
+                cache          = cache,
+            )
             items.append(ClassifiedItem(
                 pdf_path   = f.pdf_path,
                 page_index = i,

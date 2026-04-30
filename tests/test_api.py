@@ -29,8 +29,14 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
 def app(tmp_path, monkeypatch):
-    """Reload api modules with an isolated jobs root."""
+    """Reload api modules with an isolated jobs root.
+
+    Tier 4 (Ollama LLM judge) is disabled here so the API tests stay fast
+    and deterministic — the LLM tier is exercised separately in
+    test_classify_llm.py.
+    """
     monkeypatch.setenv("JOBS_ROOT", str(tmp_path / "jobs"))
+    monkeypatch.setattr("backend.classify.llm_judge.LLM_DISABLED", True)
     import backend.api.jobs
     importlib.reload(backend.api.jobs)
     import backend.api.routes
@@ -48,7 +54,11 @@ async def client(app):
 
 
 def _three_fixture_pdfs() -> list[Path]:
-    return sorted(FIXTURE.rglob("*.pdf"))[:3]
+    """Three TGCH structural PDFs that filename-tier-match — keeps API
+    smoke tests in the seconds, not the minutes. Alphabetical sort across
+    the whole fixture would pick ARCH zone-plans first, which fall through
+    to tier 4 (LLM) and slow tests by ~25s/page."""
+    return sorted((FIXTURE / "FLOOR FRAMING PLANS").glob("*.pdf"))[:3]
 
 
 async def _wait_for_status(client, job_id: str, target: str, timeout: float = 30.0) -> dict:

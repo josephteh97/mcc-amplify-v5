@@ -158,12 +158,17 @@ Classifier signals, evaluated in order — first confident hit wins:
    - vertical level lines spanning ≥60% of page width → ELEVATION
    - cut-line label pattern (`SECTION A-A`) detected → SECTION
    - horizontal floor outline + grid bubbles around perimeter → STRUCT_PLAN_OVERALL
-4. **LLM judge** (Ollama, vision-language) — the smart brain. Catches anything heuristics couldn't decide and is the primary line of defence against junk files (ARCH plans, MEP, schedules, details, foundations, partial-discipline sheets) leaking into the four kept buckets.
-   - Input: rendered 512 px page thumbnail + filename + title-block text snippet (bottom-right region) + page-1 corner crop.
-   - Prompt: "Given this construction drawing page, classify it as one of: `STRUCT_PLAN_OVERALL` | `STRUCT_PLAN_ENLARGED` | `ELEVATION` | `SECTION` | `DISCARD`. DISCARD covers perspectives/renderings, schedules, ARCH plans, MEP, details, foundations, anything not on the four kept classes. Return JSON `{class, reason, confidence}`."
-   - Model: `qwen3-vl:2b` (default, vision-capable, already in v4 stack) | `gemma3:4b-it-qat` (alternative) — selected via `CLASSIFIER_LLM_MODEL` env var.
-   - Cache: keyed by `sha256(page_bytes)` — same page is never re-judged across reruns.
-   - Decision: `confidence ≥ CLASSIFIER_LLM_CONF_MIN` → accept; else fall through to UI prompt.
+4. **LLM judge** (Ollama, two VLMs — primary + checker) — the smart brain. Catches anything heuristics couldn't decide and is the primary line of defence against junk files (ARCH plans, MEP, schedules, details, foundations, partial-discipline sheets) leaking into the four kept buckets.
+   - **Primary VLM**: `aisingapore/Gemma-SEA-LION-v4-4B-VL:latest` (default; override via `CLASSIFIER_LLM_PRIMARY_MODEL`). Makes the classification call.
+   - **Checker VLM**: `qwen3-vl:latest` (default; different architecture so the two don't share blind spots). Independently classifies the same image. Disable via `CLASSIFIER_LLM_CHECKER_DISABLED=true` if you want a single-model run.
+   - **Combination rule**:
+     - both pick same class → accept, `confidence = max(primary, checker)`, `signals.checker_agreed=True`
+     - disagree → UNRESOLVED, both verdicts preserved in `signals.{primary,checker}` for the UI prompt
+     - primary fails (Ollama down / unparseable / unknown class) → UNRESOLVED with checker's verdict captured
+     - checker fails / disabled → accept primary alone if `confidence ≥ CLASSIFIER_LLM_CONF_MIN`, else UNRESOLVED
+   - Input: rendered 512 px page thumbnail; both models receive the identical prompt.
+   - Prompt: explicit anti-cue ("grid bubbles appear in BOTH structural and architectural plans — do NOT use them as the deciding factor"); room-label rule ("OFFICE/TOILET/LIFT/STAIR/BEDROOM in a plan view → DISCARD"). Plain-text reply format `CLASS: / CONFIDENCE: / REASON:` — NOT `format=json` (VLMs that emit a hidden "thinking" channel starve the JSON output budget).
+   - Cache: SQLite keyed by `(page_hash, model)` at `data/classifier_cache.sqlite`. Each model's verdict is stored independently so swapping primary↔checker reuses prior work.
 5. **UNKNOWN** → UI prompt; the user's decision is saved as a new filename rule for this project.
 
 Per-project rule cache lives in `meta.yaml.classifier_rules`.
@@ -571,9 +576,11 @@ ROUND_ASPECT_HI        = 1.15
 TYPE_DIM_TOL_MM        = 5            # type resolver match tolerance
 LEVEL_AGREEMENT_TOL_MM = 25           # cross-elevation level agreement
 
-CLASSIFIER_LLM_MODEL    = "qwen3-vl:2b"   # Ollama model for §5.4 judge (env-overridable)
-CLASSIFIER_LLM_THUMBPX  = 512             # rendered thumbnail size for vision input
-CLASSIFIER_LLM_CONF_MIN = 0.7             # accept threshold; below → UI prompt fallback
+CLASSIFIER_LLM_PRIMARY_MODEL = "aisingapore/Gemma-SEA-LION-v4-4B-VL:latest"  # §5.4 primary
+CLASSIFIER_LLM_CHECKER_MODEL = "qwen3-vl:latest"                              # §5.4 checker
+CLASSIFIER_LLM_THUMBPX       = 512    # rendered thumbnail size for vision input
+CLASSIFIER_LLM_CONF_MIN      = 0.7    # accept threshold (single-model fallback only;
+                                      # primary+checker uses agreement, not threshold)
 
 TYPE_CODE_RE      = r"^(H-)?[A-Z]{1,3}\d+$"
 SECTION_RE        = r"^\d{3,4}\s*[xX]\s*\d{3,4}$"

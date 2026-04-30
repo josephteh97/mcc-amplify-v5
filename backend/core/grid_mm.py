@@ -22,9 +22,13 @@ ROUND_ASPECT_HI:                 float = 1.15
 TYPE_DIM_TOL_MM:                 float = 5.0
 LEVEL_AGREEMENT_TOL_MM:          float = 25.0
 
-CLASSIFIER_LLM_MODEL:            str   = "qwen3-vl:2b"
+CLASSIFIER_LLM_PRIMARY_MODEL:    str   = "aisingapore/Gemma-SEA-LION-v4-4B-VL:latest"
+CLASSIFIER_LLM_CHECKER_MODEL:    str   = "qwen3-vl:latest"
 CLASSIFIER_LLM_THUMBPX:          int   = 512
 CLASSIFIER_LLM_CONF_MIN:         float = 0.7
+
+# Back-compat shim — some older imports still use the singular constant.
+CLASSIFIER_LLM_MODEL:            str   = CLASSIFIER_LLM_PRIMARY_MODEL
 
 TYPE_CODE_RE:  str = r"^(H-)?[A-Z]{1,3}\d+$"
 SECTION_RE:    str = r"^\d{3,4}\s*[xX]\s*\d{3,4}$"
