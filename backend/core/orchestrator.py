@@ -39,6 +39,7 @@ from backend.reconcile             import (
     reconcile_project,
     reconcile_storey,
 )
+from backend.emit                  import EmitResult, RevitClient, emit_storey
 from backend.resolve               import (
     StoreyResolveResult,
     load_inventory,
@@ -64,6 +65,7 @@ class JobResult:
     reconcile_storeys:  list[StoreyReconcileResult] | None  = None
     reconcile_project_: ProjectReconcileResult | None      = None
     resolve_storeys:    list[StoreyResolveResult] | None    = None
+    emit_storeys:       list[EmitResult] | None             = None
 
 
 def _emit(progress: ProgressFn, event_type: str, payload: dict) -> None:
@@ -77,6 +79,7 @@ def run(
     meta_path:           Path | None      = None,
     progress:            ProgressFn       = None,
     run_yolo_columns:    bool             = True,
+    revit_client:        RevitClient | None = None,
 ) -> JobResult:
     """One job = one upload = one output (§2). Rerun = full reprocess.
 
@@ -133,6 +136,13 @@ def run(
 
     resolve_results = _run_resolve(workspace, storey_results, meta, progress)
 
+    emit_results = _run_emit(
+        workspace,
+        storey_results, project_result, resolve_results, meta,
+        progress,
+        revit_client = revit_client,
+    )
+
     return JobResult(
         workspace          = workspace,
         manifest           = manifest,
@@ -144,6 +154,7 @@ def run(
         reconcile_storeys  = storey_results,
         reconcile_project_ = project_result,
         resolve_storeys    = resolve_results,
+        emit_storeys       = emit_results,
     )
 
 
@@ -200,6 +211,125 @@ def _run_plan_overall(
         f"with_grid={summary['with_grid']} rejected={summary['rejected']}",
     )
     return results
+
+
+def _run_emit(
+    workspace:        Workspace,
+    storey_results:   list[StoreyReconcileResult],
+    project_result:   ProjectReconcileResult | None,
+    resolve_results:  list[StoreyResolveResult],
+    meta:             MetaYaml | None,
+    progress:         ProgressFn,
+    revit_client:     RevitClient | None = None,
+) -> list[EmitResult]:
+    """Stage 5B — Geometry Emitter (PLAN.md §9).
+
+    Per storey: gates → GLTF → pyRevit manifest. Failed *hard* gates
+    abort emission for that storey; warnings (e.g. uncovered columns)
+    don't.
+    """
+    inventory_path = workspace.output / "_family_inventory.json"
+    if not inventory_path.exists():
+        logger.warning("Stage 5B: no _family_inventory.json — emit will skip every storey")
+        return []
+    inventory_payload = json.loads(inventory_path.read_text())
+
+    # Build a fast lookup of typing payloads + reconciled payloads by storey.
+    typing_by_storey:     dict[str, Path] = {
+        rr.storey_id: rr.typing_path for rr in resolve_results if rr.typing_path
+    }
+    reconciled_by_storey: dict[str, Path] = {
+        sr.storey_id: sr.payload_path for sr in storey_results if sr.payload_path
+    }
+    overall_by_storey:    dict[str, Path] = {
+        sr.storey_id: sr.overall_path for sr in storey_results
+    }
+    project_levels = project_result.levels if project_result else []
+    slab_default_mm = (
+        project_result.slabs.get("default_thickness_mm")
+        if project_result is not None else None
+    )
+    if slab_default_mm is None and meta is not None:
+        slab_default_mm = float(meta.slabs.default_thickness_mm)
+    slab_zones = (project_result.slabs.get("zones") if project_result else {}) or {}
+
+    storeys = sorted(typing_by_storey)
+    _emit(progress, "stage_started", {"stage": "emit", "storey_count": len(storeys)})
+    logger.info(f"Stage 5B — emit: {len(storeys)} storey(s)")
+
+    out_dir = workspace.output
+    results: list[EmitResult] = []
+    for storey_id in storeys:
+        try:
+            ov_path  = overall_by_storey.get(storey_id)
+            rec_path = reconciled_by_storey.get(storey_id)
+            typ_path = typing_by_storey[storey_id]
+            ov  = json.loads(ov_path.read_text())  if ov_path  and ov_path.exists()  else None
+            rec = json.loads(rec_path.read_text()) if rec_path and rec_path.exists() else None
+            typ = json.loads(typ_path.read_text())
+            er = emit_storey(
+                storey_id          = storey_id,
+                overall_payload    = ov,
+                reconciled_payload = rec,
+                typing_payload     = typ,
+                project_levels     = project_levels,
+                slab_default_mm    = slab_default_mm,
+                slab_zones         = slab_zones,
+                inventory_payload  = inventory_payload,
+                out_dir            = out_dir,
+                revit_client       = revit_client,
+            )
+        except Exception as exc:                       # noqa: BLE001
+            logger.exception(f"emit_storey failed on {storey_id}: {exc}")
+            continue
+        results.append(er)
+
+    summary = {
+        "storey_count":    len(results),
+        "succeeded":       sum(1 for r in results if r.succeeded),
+        "skipped":         sum(1 for r in results if not r.succeeded),
+        "total_columns":   sum(r.gltf.column_count for r in results if r.gltf),
+        "rvt_built":       sum(1 for r in results
+                               if r.rvt_build is not None and r.rvt_build.rvt_path is not None),
+    }
+    _write_emit_report(workspace, results, summary)
+    _emit(progress, "stage_completed", {"stage": "emit", **summary})
+    logger.info(
+        f"Stage 5B done — storeys={summary['storey_count']} "
+        f"succeeded={summary['succeeded']} skipped={summary['skipped']} "
+        f"columns={summary['total_columns']}"
+    )
+    return results
+
+
+def _write_emit_report(
+    workspace:  Workspace,
+    results:    list[EmitResult],
+    summary:    dict,
+) -> None:
+    payload = {
+        "summary": summary,
+        "storeys": [
+            {
+                "storey_id":        r.storey_id,
+                "succeeded":        r.succeeded,
+                "skipped_reason":   r.skipped_reason,
+                "gates":            r.gates.to_dict(),
+                "gltf_path":        None if r.gltf is None        else str(r.gltf.gltf_path),
+                "transaction_path": None if r.transaction is None else str(r.transaction.transaction_path),
+                "rvt_path":         None if r.rvt_build is None or r.rvt_build.rvt_path is None
+                                       else str(r.rvt_build.rvt_path),
+                "rvt_warnings":     [] if r.rvt_build is None    else r.rvt_build.warnings,
+                "rvt_error":        None if r.rvt_build is None  else r.rvt_build.error,
+                "column_count":     None if r.gltf is None       else r.gltf.column_count,
+            }
+            for r in results
+        ],
+    }
+    out = workspace.output / "_emit_report.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w") as f:
+        json.dump(payload, f, indent=2)
 
 
 def _run_resolve(
