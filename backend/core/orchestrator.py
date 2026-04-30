@@ -19,6 +19,14 @@ from typing import Callable
 
 from loguru import logger
 
+from backend.classify.classifier import (
+    ClassifiedItem,
+    classify_manifest,
+    summarise,
+    write_report,
+)
+from backend.classify.rules import FilenameRule
+from backend.classify.types import DrawingClass
 from backend.core.meta_yaml import MetaYaml
 from backend.core.workspace import Workspace
 from backend.ingest.ingest import IngestedFile, ingest, walk_uploads
@@ -31,8 +39,9 @@ ProgressFn = Callable[[str, dict], None] | None
 
 @dataclass
 class JobResult:
-    workspace: Workspace
-    manifest:  list[IngestedFile]
+    workspace:       Workspace
+    manifest:        list[IngestedFile]
+    classification:  list[ClassifiedItem] | None = None
 
 
 def _emit(progress: ProgressFn, event_type: str, payload: dict) -> None:
@@ -54,6 +63,7 @@ def run(
     """
     source = walk_root if walk_root is not None else workspace.uploads
 
+    meta: MetaYaml | None = None
     if meta_path is not None and meta_path.exists():
         meta = MetaYaml.load(meta_path)
         meta.save(workspace.meta_path)
@@ -70,7 +80,38 @@ def run(
 
     _persist_manifest(workspace, manifest)
 
-    return JobResult(workspace=workspace, manifest=manifest)
+    _emit(progress, "stage_started", {"stage": "classify"})
+    logger.info("Stage 2 — classify")
+    filename_rules = _filename_rules_from_meta(meta)
+    classified = classify_manifest(manifest, filename_rules=filename_rules)
+    cls_summary = summarise(classified)
+    write_report(classified, workspace.output / "_classification_report.json")
+    logger.info(
+        f"Stage 2 done — {cls_summary['total']} pages | "
+        + " ".join(f"{k}={v}" for k, v in cls_summary["by_class"].items())
+    )
+    _emit(progress, "stage_completed", {"stage": "classify", **cls_summary})
+
+    return JobResult(workspace=workspace, manifest=manifest, classification=classified)
+
+
+def _filename_rules_from_meta(meta: MetaYaml | None) -> list[FilenameRule] | None:
+    """Promote meta.yaml.project.classifier_rules into runtime FilenameRule objects.
+
+    Returns None when the user hasn't configured rules — the classifier then
+    uses its built-in DEFAULT_FILENAME_RULES.
+    """
+    if meta is None or not meta.project.classifier_rules:
+        return None
+    out: list[FilenameRule] = []
+    for r in meta.project.classifier_rules:
+        try:
+            cls = DrawingClass(r.cls)
+        except ValueError:
+            logger.warning(f"meta.yaml classifier_rule has unknown class {r.cls!r}; skipping")
+            continue
+        out.append(FilenameRule(pattern=r.pattern, drawing_class=cls))
+    return out or None
 
 
 def _persist_manifest(workspace: Workspace, manifest: list[IngestedFile]) -> None:
